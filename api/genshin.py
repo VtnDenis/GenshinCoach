@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -287,7 +288,7 @@ def tavily_search(query, k=5):
     if not key:
         return {"answer": "", "results": []}
     try:
-        d = _http_json("https://api.tavily.com/search", method="POST", timeout=25,
+        d = _http_json("https://api.tavily.com/search", method="POST", timeout=10,
                        data={"api_key": key, "query": query, "max_results": max(1, min(8, k)),
                              "include_answer": True, "search_depth": "basic"})
     except Exception:
@@ -320,7 +321,7 @@ def fandom_search(query, k=3):
     try:
         q = urllib.parse.urlencode({"action": "query", "list": "search",
                                     "srsearch": query, "format": "json", "srlimit": max(1, min(5, k))})
-        d = _http_json(f"https://genshin-impact.fandom.com/api.php?{q}", timeout=15)
+        d = _http_json(f"https://genshin-impact.fandom.com/api.php?{q}", timeout=10)
         out = []
         for r in ((d.get("query") or {}).get("search") or [])[:k]:
             t = r.get("title", "")
@@ -332,9 +333,9 @@ def fandom_search(query, k=3):
         return []
 
 
-ADVICE_RE = re.compile(r"build|arme|artefact|artéfact|team|[eé]quipe|rotation|stats?|talent|"
-                       r"constellation|monter|priorit[ée]|conseil|recommand|que faire|comment|"
-                       r"qui pull|reroll|tier|donjon|abysse|abyss|boss|farming|farm",
+ADVICE_RE = re.compile(r"build|arme|artefact|artéfact|team|[eé]quipe|rotation|talent|"
+                       r"constellation|monter|priorit[ée]|conseil|recommand|pull|reroll|tier|"
+                       r"donjon|abysse|abyss|boss|farm|stat\b|stats|d[eé]g[aâ]ts|crit|recharge",
                        re.IGNORECASE)
 
 
@@ -346,12 +347,21 @@ def maybe_fact_context(question):
     if news:
         parts.append(news)
     if ADVICE_RE.search(q):
-        r = tavily_search(f"Genshin Impact {q} build guide", k=5)
+        box = {}
+        t1 = threading.Thread(target=lambda: box.update(
+            tavily=[tavily_search(f"Genshin Impact {q} build guide", k=5)]), daemon=True)
+        t2 = threading.Thread(target=lambda: box.update(
+            fandom=fandom_search(f"Genshin Impact {q}", k=3)), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join(12)
+        t2.join(12)
+        r = (box.get("tavily") or [{"answer": "", "results": []}])[0]
         if r["answer"]:
             parts.append("Vérif web : " + r["answer"][:800])
         for x in r["results"][:3]:
             parts.append(f"- {x['title']} ({x['url']}) : {x['snippet'][:250]}")
-        for x in fandom_search(f"Genshin Impact {q}", k=3):
+        for x in box.get("fandom") or []:
             parts.append(f"- Wiki Fandom : {x['title']} ({x['url']}) — à vérifier avant de conseiller.")
         if not r["answer"] and not r["results"]:
             for x in fandom_search(q, k=3):
@@ -530,14 +540,32 @@ SYSTEM = ("Tu es un coach Genshin Impact francophone pour un joueur adulte qui d
 def build_messages(question, uid=None, history=None, showcase_text=None):
     """Construit les messages LLM (Enka + fact-check + historique). -> (msgs, detailed)."""
     uid = str(uid or DEFAULT_UID)
-    try:
-        data = fetch_showcase(uid)
-        ctx = showcase_text or showcase_summary(data)
-        detailed = bool(data.get("avatarInfoList"))
-    except Exception as ex:
-        data, detailed = None, False
-        ctx = f"Enka inaccessible pour UID {uid} : {ex}. Conseiller en générique + vérifier UID/vitrine."
-    fact = maybe_fact_context(question)
+    t0 = time.time()
+    box = {}
+
+    def w_ctx():
+        try:
+            data = fetch_showcase(uid)
+            box["ctx"] = showcase_text or showcase_summary(data)
+            box["detailed"] = bool(data.get("avatarInfoList"))
+        except Exception as ex:
+            box["ctx"] = (f"Enka inaccessible pour UID {uid} : {ex}. "
+                          "Conseiller en générique + vérifier UID/vitrine.")
+            box["detailed"] = False
+
+    def w_fact():
+        box["fact"] = maybe_fact_context(question)
+
+    t1 = threading.Thread(target=w_ctx, daemon=True)
+    t2 = threading.Thread(target=w_fact, daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(30)
+    t2.join(30)
+    ctx = box.get("ctx") or f"Enka trop lent pour UID {uid}. Conseiller en générique."
+    detailed = box.get("detailed", False)
+    fact = box.get("fact") or ""
+    print(f"TIMING ctx+fact={time.time()-t0:.1f}s (q={question[:40]!r})", flush=True)
     msgs = [{"role": "system", "content": SYSTEM + "\n\nCompte joueur (Enka) :\n" + ctx[:4000]}]
     if fact:
         msgs.append({"role": "system",

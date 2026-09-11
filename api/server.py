@@ -165,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as ex:
                     traceback.print_exc()
                     return _json(self, {"error": _db_error(ex)}, 500)
-                msgs, _, _ = genshin.build_messages(q, uid=uid, history=hist)
+                msgs = None
                 model = genshin.E("OMNIROUTE_MODEL", "auto")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -183,6 +183,9 @@ class Handler(BaseHTTPRequestHandler):
                     emit({"meta": {"session_id": sid}})
                 except (BrokenPipeError, ConnectionResetError):
                     return
+                # Pré-travail lent (Enka + fact-check) APRÈS le premier event :
+                # le front affiche "Coach écrit…" au lieu d'attendre dans le vide.
+                msgs, _, _ = genshin.build_messages(q, uid=uid, history=hist)
                 full = []
                 try:
                     for tok in genshin.llm_stream(msgs, session_key=sid):
