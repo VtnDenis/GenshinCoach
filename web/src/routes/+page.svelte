@@ -19,6 +19,7 @@
 	} from '$lib/api';
 	import SidebarNav from '$lib/components/SidebarNav.svelte';
 	import Thinking from '$lib/components/Thinking.svelte';
+	import ThinkingTrace from '$lib/components/ThinkingTrace.svelte';
 	import CoachMessage from '$lib/components/CoachMessage.svelte';
 	import PromptBar from '$lib/components/PromptBar.svelte';
 	import LoadingState from '$lib/components/LoadingState.svelte';
@@ -174,7 +175,9 @@
 			const r = await getMessages(id);
 			msgs = r.messages.map((m) => ({
 				role: m.role === 'user' ? 'user' : 'assistant',
-				text: m.content
+				text: m.content,
+				thinking: m.thinking ?? null,
+				thinkSecs: m.secs ?? null
 			}));
 			sid = id;
 			setSid(id);
@@ -223,6 +226,7 @@
 		msgs = [...msgs, { role: 'assistant', text: '' }];
 		const idx = msgs.length - 1;
 		let streamed = '';
+		let streamedThinking = '';
 		streaming = false;
 		const paint = (t: string) => {
 			streamed += t;
@@ -230,24 +234,41 @@
 			msgs = msgs.map((m, i) => (i === idx ? { ...m, text: streamed } : m));
 			scrollBottom();
 		};
-		const finish = (text: string, model?: string | null) => {
+		const paintThinking = (t: string) => {
+			streamedThinking += t;
+			msgs = msgs.map((m, i) => (i === idx ? { ...m, thinking: streamedThinking } : m));
+		};
+		const finish = (
+			text: string,
+			model?: string | null,
+			thinking?: string | null,
+			thinkSecs?: number | null
+		) => {
 			if (!text.trim()) text = 'Erreur : réponse vide du coach, réessaie.';
 			msgs = msgs.map((m, i) =>
-				i === idx ? { role: 'assistant', text, model: model ?? m.model } : m
+				i === idx
+					? {
+							role: 'assistant',
+							text,
+							model: model ?? m.model,
+							thinking: thinking ?? m.thinking ?? null,
+							thinkSecs: thinkSecs ?? m.thinkSecs ?? null
+						}
+					: m
 			);
 		};
 		try {
 			try {
-				const r = await sendChatStream(q, uid, sid, paint);
+				const r = await sendChatStream(q, uid, sid, paint, paintThinking);
 				sid = r.session_id;
 				setSid(sid);
-				finish(r.answer || streamed, r.model);
+				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs);
 			} catch (e) {
 				if (streamed) throw e; // partiel déjà affiché : on ajoute l'erreur dessous
 				const r = await sendChat(q, uid, sid); // repli batch
 				sid = r.session_id;
 				setSid(sid);
-				finish(r.answer, r.model);
+				finish(r.answer, r.model, r.thinking || null, null);
 			}
 			syncUrl(true);
 			refreshSessions();
@@ -516,6 +537,13 @@
 											<LoadingState label="Coach écrit" />
 										</div>
 									{:else}
+										{#if m.thinking}
+											<ThinkingTrace
+												text={m.thinking}
+												secs={m.thinkSecs ?? null}
+												streaming={busy && streaming && i === msgs.length - 1}
+											/>
+										{/if}
 										<CoachMessage
 											text={m.text || 'Erreur : réponse vide du coach, réessaie.'}
 											model={m.model}

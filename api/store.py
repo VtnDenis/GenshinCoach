@@ -110,6 +110,8 @@ SCHEMA = [
       id TEXT PRIMARY KEY, uid TEXT, title TEXT, created_at REAL, updated_at REAL)""",
     """CREATE TABLE IF NOT EXISTS genshin_messages(
       id TEXT PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, created_at REAL)""",
+    """CREATE TABLE IF NOT EXISTS genshin_thinking(
+      message_id TEXT PRIMARY KEY, thinking TEXT, secs REAL)""",
 ]
 
 
@@ -165,17 +167,37 @@ def list_sessions(limit=20):
 
 
 def get_messages(sid):
-    rows = _q_resilient("SELECT role,content,created_at FROM genshin_messages WHERE session_id=? "
-                        "ORDER BY created_at ASC LIMIT 200", (sid,), fetch="all")
+    rows = _q_resilient(
+        "SELECT m.role,m.content,m.created_at,t.thinking,t.secs FROM genshin_messages m "
+        "LEFT JOIN genshin_thinking t ON t.message_id=m.id WHERE m.session_id=? "
+        "ORDER BY m.created_at ASC LIMIT 200", (sid,), fetch="all")
     return rows or []
 
 
 def add_message(sid, role, content):
+    mid = uuid.uuid4().hex
     _q_resilient("INSERT INTO genshin_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
-                 (uuid.uuid4().hex, sid, role, content, time.time()))
+                 (mid, sid, role, content, time.time()))
     _q_resilient("UPDATE genshin_sessions SET updated_at=? WHERE id=?", (time.time(), sid))
+    return mid
+
+
+def save_thinking(mid, thinking, secs=None):
+    if not thinking:
+        return
+    try:
+        _q_resilient("INSERT OR REPLACE INTO genshin_thinking(message_id,thinking,secs) VALUES(?,?,?)",
+                     (mid, thinking[:4000], secs))
+    except Exception:
+        pass
 
 
 def del_session(sid):
+    rows = _q_resilient("SELECT id FROM genshin_messages WHERE session_id=?", (sid,), fetch="all")
+    for r in rows or []:
+        try:
+            _q_resilient("DELETE FROM genshin_thinking WHERE message_id=?", (r["id"],))
+        except Exception:
+            pass
     _q_resilient("DELETE FROM genshin_messages WHERE session_id=?", (sid,))
     _q_resilient("DELETE FROM genshin_sessions WHERE id=?", (sid,))

@@ -443,11 +443,13 @@ def _sse_post(url, data, headers, timeout=180):
 
 
 def _extract_delta(evt):
-    """Tente d'extraire le bout de texte d'un event SSE (2 formats supportés)."""
+    """Tente d'extraire le bout de réponse d'un event SSE (2 formats supportés)."""
     if isinstance(evt, str):
         return evt
     if not isinstance(evt, dict):
         return ""
+    if str(evt.get("type", "")).startswith("response.reasoning"):
+        return ""  # résumé de raisonnement : géré par _extract_thinking, pas dans la réponse
     try:  # OpenAI /chat/completions : choices[0].delta.content
         ch = (evt.get("choices") or [{}])[0] or {}
         t = ((ch.get("delta") or {}).get("content")) or ch.get("text")
@@ -456,24 +458,45 @@ def _extract_delta(evt):
     except Exception:
         pass
     # Responses API : {"type": "response.output_text.delta", "delta": "..."}
-    if isinstance(evt.get("delta"), str) and evt["delta"]:
+    if evt.get("type") == "response.output_text.delta" \
+            and isinstance(evt.get("delta"), str) and evt["delta"]:
         return evt["delta"]
-    if isinstance(evt.get("text"), str) and str(evt.get("type", "")).endswith("delta"):
-        return evt["text"]
     return ""
+
+
+def _extract_thinking(evt):
+    """Résumé de raisonnement partageable (summary:auto), affichable dans l'UI."""
+    if isinstance(evt, dict) and evt.get("type") == "response.reasoning_summary_text.delta" \
+            and isinstance(evt.get("delta"), str):
+        return evt["delta"]
+    return ""
+
+
+def _responses_summary(d):
+    """Résumé de raisonnement d'une réponse non-streamée (batch)."""
+    try:
+        out = []
+        for item in d.get("output") or []:
+            if isinstance(item, dict) and item.get("type") == "reasoning":
+                for part in item.get("summary") or []:
+                    if isinstance(part, dict) and part.get("text"):
+                        out.append(part["text"])
+        return "\n".join(out)
+    except Exception:
+        return ""
 
 
 def _reasoning_arg():
     """Effort de raisonnement (Responses API) : OMNIROUTE_REASONING_EFFORT=minimal|low|medium|high|xhigh.
-    Défaut 'low' : TTFT bien plus court, qualité suffisante pour du coaching court."""
-    v = (E("OMNIROUTE_REASONING_EFFORT", "low") or "").strip().lower()
+    Défaut 'xhigh' + résumé partageable (summary:auto) pour afficher le train de pensée dans l'UI."""
+    v = (E("OMNIROUTE_REASONING_EFFORT", "xhigh") or "").strip().lower()
     if v in ("minimal", "low", "medium", "high", "xhigh"):
-        return {"reasoning": {"effort": v}}
+        return {"reasoning": {"effort": v, "summary": "auto"}}
     return {}
 
 
 def llm_stream(messages, session_key=""):
-    """Yield les bouts de réponse au fil de l'eau. Repli batch si le stream échoue."""
+    """Yield ("thinking"|"answer", texte) au fil de l'eau. Repli batch si le stream échoue."""
     base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
     model = E("OMNIROUTE_MODEL", "auto")
     if not base:
@@ -491,16 +514,22 @@ def llm_stream(messages, session_key=""):
     got = False
     try:
         for evt in _sse_post(url, data, _llm_headers(session_key)):
+            th = _extract_thinking(evt)
+            if th:
+                yield ("thinking", th)
+                continue
             t = _extract_delta(evt)
             if t:
                 got = True
-                yield t
+                yield ("answer", t)
     except Exception:
         if got:
             return  # coupe mid-stream : le partiel est déjà affiché/sauvegardé
     if not got:  # stream vide ou incompatible : un seul bloc (le front gère pareil)
-        answer, _ = llm_complete(messages, session_key=session_key)
-        yield answer
+        answer, _, thinking = llm_complete(messages, session_key=session_key)
+        if thinking:
+            yield ("thinking", thinking)
+        yield ("answer", answer)
 
 
 def llm_complete(messages, session_key=""):
@@ -516,12 +545,13 @@ def llm_complete(messages, session_key=""):
         payload.update(_reasoning_arg())
         d = _http_json(base + "/responses", method="POST", timeout=180,
                        headers=_llm_headers(session_key), data=payload)
-        return _responses_text(d), model
+        return _responses_text(d), model, _responses_summary(d)
     d = _http_json(base + "/chat/completions", method="POST", timeout=120,
                    headers=_llm_headers(session_key),
                    data={"model": model, "stream": False, "messages": messages})
+    think = _responses_summary(d) if isinstance(d, dict) else ""
     try:
-        return d["choices"][0]["message"]["content"], d.get("model", model)
+        return d["choices"][0]["message"]["content"], d.get("model", model), think
     except (KeyError, IndexError, TypeError):
         raise RuntimeError(f"Réponse LLM inattendue : {str(d)[:200]}")
 
@@ -592,9 +622,9 @@ def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
     uid = str(uid or DEFAULT_UID)
     msgs, _, ctx = build_messages(question, uid=uid, history=history, showcase_text=showcase_text)
     try:
-        answer, model = llm_complete(msgs, session_key=session_key or uid)
-        return {"answer": answer, "model": model, "llm": True}
+        answer, model, thinking = llm_complete(msgs, session_key=session_key or uid)
+        return {"answer": answer, "model": model, "thinking": thinking, "llm": True}
     except Exception as ex:
         fall = ("Le LLM est injoignable (%s). En attendant, voici l'audit de ta vitrine :\n\n%s"
                 % (ex, ctx[:3000]))
-        return {"answer": fall, "model": "audit-only", "llm": False}
+        return {"answer": fall, "model": "audit-only", "thinking": "", "llm": False}

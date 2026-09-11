@@ -9,6 +9,8 @@ export interface StoredMsg {
 	role: string;
 	content: string;
 	created_at: number;
+	thinking?: string | null;
+	secs?: number | null;
 }
 
 export interface Step {
@@ -22,6 +24,8 @@ export interface Msg {
 	role: 'user' | 'assistant';
 	text: string;
 	model?: string | null;
+	thinking?: string | null;
+	thinkSecs?: number | null;
 }
 
 export interface ShowcaseChar {
@@ -118,14 +122,30 @@ export const sendChat = (question: string, uid: string, session_id: string | nul
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ question, uid, session_id })
-	}).then(j<{ answer: string; model: string; session_id: string; detailed: boolean }>);
+	}).then(
+		j<{
+			answer: string;
+			model: string;
+			thinking: string;
+			session_id: string;
+			detailed: boolean;
+		}>
+	);
 
 export const sendChatStream = async (
 	question: string,
 	uid: string,
 	session_id: string | null,
-	onToken: (t: string) => void
-): Promise<{ answer: string; model: string; session_id: string; detailed: boolean }> => {
+	onToken: (t: string) => void,
+	onThinking?: (t: string) => void
+): Promise<{
+	answer: string;
+	thinking: string;
+	thinkSecs: number | null;
+	model: string;
+	session_id: string;
+	detailed: boolean;
+}> => {
 	const r = await fetch('/api/chat/stream', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
@@ -136,6 +156,8 @@ export const sendChatStream = async (
 	const dec = new TextDecoder();
 	let buf = '';
 	let full = '';
+	let thinking = '';
+	let thinkSecs: number | null = null;
 	let sid = session_id ?? '';
 	let model = '';
 	let detailed = false;
@@ -161,6 +183,9 @@ export const sendChatStream = async (
 				if (typeof ev['delta'] === 'string' && ev['delta']) {
 					full += ev['delta'] as string;
 					onToken(ev['delta'] as string);
+				} else if (typeof ev['thinking'] === 'string' && ev['thinking']) {
+					thinking += ev['thinking'] as string;
+					onThinking?.(ev['thinking'] as string);
 				} else if (ev['meta'] && typeof (ev['meta'] as Record<string, unknown>)['session_id'] === 'string') {
 					sid = (ev['meta'] as Record<string, unknown>)['session_id'] as string;
 				} else if (ev['done']) {
@@ -168,13 +193,15 @@ export const sendChatStream = async (
 					if (typeof d['session_id'] === 'string') sid = d['session_id'] as string;
 					if (typeof d['model'] === 'string') model = d['model'] as string;
 					detailed = d['detailed'] === true;
+					if (typeof d['thinking'] === 'string' && d['thinking']) thinking = d['thinking'] as string;
+					if (typeof d['think_secs'] === 'number') thinkSecs = d['think_secs'] as number;
 				} else if (typeof ev['error'] === 'string') {
 					throw new Error(ev['error'] as string);
 				}
 			}
 		}
 	}
-	return { answer: full, model, session_id: sid, detailed };
+	return { answer: full, thinking, thinkSecs, model, session_id: sid, detailed };
 };
 
 export const listSessions = (n = 20) =>

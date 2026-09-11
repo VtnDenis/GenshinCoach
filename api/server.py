@@ -138,7 +138,8 @@ class Handler(BaseHTTPRequestHandler):
                 r = genshin.ask(q, uid=uid, history=hist, session_key=sid)
                 try:
                     store.add_message(sid, "user", q)
-                    store.add_message(sid, "assistant", r["answer"])
+                    amid = store.add_message(sid, "assistant", r["answer"])
+                    store.save_thinking(amid, r.get("thinking") or "")
                     if not (sess or {}).get("title"):
                         store.set_title(sid, q)
                 except Exception as ex:
@@ -150,6 +151,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     det = False
                 return _json(self, {"answer": r["answer"], "model": r["model"],
+                                    "thinking": r.get("thinking") or "",
                                     "session_id": sid, "detailed": det})
             if path == "/api/chat/stream":
                 b = _body(self)
@@ -186,9 +188,20 @@ class Handler(BaseHTTPRequestHandler):
                 # Pré-travail lent (Enka + fact-check) APRÈS le premier event :
                 # le front affiche "Coach écrit…" au lieu d'attendre dans le vide.
                 msgs, _, _ = genshin.build_messages(q, uid=uid, history=hist)
-                full = []
+                full, think_parts = [], []
+                t_start = time.time()
+                think_secs = None
                 try:
-                    for tok in genshin.llm_stream(msgs, session_key=sid):
+                    for kind, tok in genshin.llm_stream(msgs, session_key=sid):
+                        if kind == "thinking":
+                            think_parts.append(tok)
+                            try:
+                                emit({"thinking": tok})
+                            except (BrokenPipeError, ConnectionResetError):
+                                break
+                            continue
+                        if think_secs is None:
+                            think_secs = round(time.time() - t_start, 1)
                         full.append(tok)
                         try:
                             emit({"delta": tok})
@@ -201,6 +214,9 @@ class Handler(BaseHTTPRequestHandler):
                     except (BrokenPipeError, ConnectionResetError):
                         pass
                 answer = "".join(full)
+                thinking = "".join(think_parts)
+                if think_secs is None:
+                    think_secs = round(time.time() - t_start, 1)
                 try:
                     try:
                         data = genshin.fetch_showcase(uid)
@@ -209,10 +225,12 @@ class Handler(BaseHTTPRequestHandler):
                         det = False
                     if answer:
                         store.add_message(sid, "user", q)
-                        store.add_message(sid, "assistant", answer)
+                        amid = store.add_message(sid, "assistant", answer)
+                        store.save_thinking(amid, thinking, think_secs)
                         if not (sess or {}).get("title"):
                             store.set_title(sid, q)
-                    emit({"done": {"session_id": sid, "model": model, "detailed": det}})
+                    emit({"done": {"session_id": sid, "model": model, "detailed": det,
+                                   "thinking": thinking, "think_secs": think_secs}})
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 except Exception as ex:
