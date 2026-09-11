@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.db
 api/.cache_*.json
+web/build/
+web/node_modules/
+web/.svelte-kit/

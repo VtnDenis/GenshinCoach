@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fr">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="text-scale" content="scale" />
+		<meta
+			name="description"
+			content="GenshinCoach — ton coach Genshin Impact : vitrine Enka, audit builds, teams et news patch."
+		/>
+		<meta name="theme-color" content="#f2f2f0" />
+		<meta property="og:title" content="GenshinCoach" />
+		<meta
+			property="og:description"
+			content="Vitrine Enka, audit builds, teams et news patch."
+		/>
+		<meta property="og:type" content="website" />
+		<meta name="twitter:card" content="summary" />
+		%sveltekit.head%
+		<title>GenshinCoach</title>
+		<style>
+			html {
+				background: #f2f2f0;
+			}
+			html.dark {
+				background: #131415;
+				color-scheme: dark;
+			}
+		</style>
+		<script>
+			/* ponytail: restore theme pre-paint to avoid flash */
+			try {
+				if (
+					(localStorage.getItem('theme') ||
+						(matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) ===
+					'dark'
+				)
+					document.documentElement.classList.add('dark');
+			} catch (e) {}
+		</script>
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

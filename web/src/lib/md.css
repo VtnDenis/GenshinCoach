@@ -1,0 +1,72 @@
+/* Styles du rendu markdown coach, scopés .md (s'applique au {@html}). */
+.md :is(h1, h2, h3) {
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	line-height: 1.3;
+	margin: 0.6em 0 0.3em;
+}
+.md h1 { font-size: 1.05rem; }
+.md h2 { font-size: 0.95rem; }
+.md h3 { font-size: 0.875rem; }
+.md :is(ul, ol) {
+	padding-left: 1.25rem;
+	margin: 0.35rem 0;
+}
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 0.15rem 0; }
+.md li > :is(ul, ol) { margin: 0.15rem 0; }
+.md a {
+	color: var(--accent-ink);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.md code {
+	font-family: var(--font-mono);
+	font-size: 0.82em;
+	background: var(--field);
+	border-radius: 5px;
+	padding: 0.1em 0.35em;
+}
+.md pre {
+	background: var(--field);
+	border-radius: 8px;
+	padding: 0.65rem 0.8rem;
+	overflow-x: auto;
+	margin: 0.4rem 0;
+}
+.md pre code {
+	background: none;
+	padding: 0;
+	font-size: 0.78rem;
+	line-height: 1.55;
+}
+.md blockquote {
+	border-left: 3px solid var(--line-strong);
+	padding-left: 0.7rem;
+	color: var(--ink-2);
+	margin: 0.4rem 0;
+}
+.md hr {
+	border: none;
+	border-top: 1px solid var(--line);
+	margin: 0.7rem 0;
+}
+.md .md-table {
+	overflow-x: auto;
+	margin: 0.4rem 0;
+}
+.md table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.82rem;
+}
+.md :is(th, td) {
+	border: 1px solid var(--line);
+	padding: 0.35rem 0.6rem;
+	text-align: left;
+	white-space: nowrap;
+}
+.md th { background: var(--inset); font-weight: 600; }
+.md .katex { color: inherit; font-size: 1em; }
+.md .katex-block { overflow-x: auto; padding: 0.25rem 0; }

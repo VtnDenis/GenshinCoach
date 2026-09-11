@@ -125,7 +125,13 @@ def ensure_session(sid, uid):
 def list_sessions(limit=20):
     rows = _q("SELECT id,uid,title,created_at,updated_at FROM genshin_sessions "
               "ORDER BY updated_at DESC LIMIT ?", (max(1, min(50, limit)),), fetch="all")
-    return rows or []
+    out = []
+    for r in rows or []:
+        n = _q("SELECT COUNT(*) AS n FROM genshin_messages WHERE session_id=?",
+               (r["id"],), fetch="one")
+        r["n"] = (n or {}).get("n", 0)
+        out.append(r)
+    return out
 
 
 def get_messages(sid):

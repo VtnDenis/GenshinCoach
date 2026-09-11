@@ -18,7 +18,8 @@ import store
 PORT = int(os.environ.get("PORT", os.environ.get("GENSHIN_PORT", "8000")))
 HOST = os.environ.get("GENSHIN_HOST", "0.0.0.0")
 HERE = os.path.dirname(os.path.abspath(__file__))
-WEB_DIR = os.path.join(os.path.dirname(HERE), "web")
+WEB_BUILD = os.path.join(os.path.dirname(HERE), "web", "build")
+WEB_DIR = WEB_BUILD if os.path.isdir(WEB_BUILD) else os.path.join(os.path.dirname(HERE), "web")
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
         ".json": "application/json", ".ico": "image/x-icon", ".png": "image/png"}
