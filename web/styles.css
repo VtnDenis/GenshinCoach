@@ -1,0 +1,41 @@
+:root {
+  --bg: #101418; --panel: #171d24; --line: #26303b;
+  --ink: #e8eef4; --muted: #93a1b0; --accent: #3fb27f; --warn: #d9a441;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font-family: "Segoe UI", system-ui, sans-serif; }
+.top { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 20px 24px; border-bottom: 1px solid var(--line); }
+h1 { margin: 0; font-size: 24px; }
+.sub { margin: 4px 0 0; color: var(--muted); }
+.uidbox { display: flex; gap: 8px; align-items: center; }
+label { color: var(--muted); font-size: 14px; }
+input { background: #0c1014; border: 1px solid var(--line); color: var(--ink);
+  border-radius: 6px; padding: 8px 10px; font-size: 15px; }
+button { background: var(--accent); border: 0; color: #06110b; font-weight: 700;
+  border-radius: 6px; padding: 9px 14px; cursor: pointer; }
+button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+main { display: grid; grid-template-columns: 340px 1fr 320px; gap: 16px;
+  padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px; min-width: 0; }
+h2 { margin: 0 0 10px; font-size: 18px; }
+h3 { margin: 14px 0 6px; font-size: 15px; }
+.muted { color: var(--muted); font-size: 13px; }
+.warn { color: var(--warn); font-size: 14px; }
+ul { list-style: none; margin: 0; padding: 0; }
+#chars li, #prio li, #news li { border-top: 1px solid var(--line); padding: 8px 0; font-size: 14px; }
+#chars b { display: block; }
+#chars small, #news small { color: var(--muted); }
+#chat { display: flex; flex-direction: column; gap: 10px; max-height: 52vh;
+  overflow-y: auto; margin-bottom: 10px; }
+.msg { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+.msg.user { border-color: var(--accent); }
+.msg.assistant { background: #11161c; }
+#form, #newsform { display: flex; gap: 8px; }
+#form input, #newsform input { flex: 1; }
+.row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+a { color: #7fd6a8; }

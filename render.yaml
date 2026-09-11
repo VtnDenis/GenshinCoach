@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: genshincoach-api
+    runtime: python
+    region: frankfurt
+    plan: free
+    branch: master
+    buildCommand: ""
+    startCommand: python api/server.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: OMNIROUTE_BASE_URL
+        value: https://opencode.ai/zen/v1
+      - key: OMNIROUTE_MODEL
+        value: big-pickle
+      - key: GENSHIN_DEFAULT_UID
+        value: "702342940"
+      - key: GENSHIN_REGION
+        value: EU
+      - key: PYTHON_VERSION
+        value: 3.14.3
