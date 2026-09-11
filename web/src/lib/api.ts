@@ -189,6 +189,13 @@ export const sendChatStream = async (
 	let model = '';
 	let detailed = false;
 	const steps: Step[] = [];
+	const upsertStep = (s: Step) => {
+		// step_end remplace la pending du même outil (pas de doublon vide)
+		const k = steps.findIndex((x) => x.tool === s.tool && x.pending);
+		if (k >= 0) steps[k] = s;
+		else steps.push(s);
+		onStep?.(s);
+	};
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
@@ -232,26 +239,21 @@ export const sendChatStream = async (
 						onScratch?.(n);
 					}
 				} else if (ev['step'] && typeof ev['step'] === 'object') {
-					const s = ev['step'] as Step;
-					steps.push(s);
-					onStep?.(s);
+					upsertStep(ev['step'] as Step);
 				} else if (ev['tool'] && typeof ev['tool'] === 'object') {
-					const s = ev['tool'] as Step;
-					steps.push(s);
-					onStep?.(s);
+					upsertStep(ev['tool'] as Step);
 				} else if (ev['done']) {
 					const d = ev['done'] as Record<string, unknown>;
 					if (typeof d['session_id'] === 'string') sid = d['session_id'] as string;
 					if (typeof d['model'] === 'string') model = d['model'] as string;
 					detailed = d['detailed'] === true;
 					if (Array.isArray(d['steps'])) {
-						for (const s of d['steps'] as Step[]) {
-							if (s && typeof s === 'object' && typeof (s as Step).tool === 'string') {
-								if (!steps.some((x) => x.tool === (s as Step).tool && x.ms === (s as Step).ms)) {
-									steps.push(s as Step);
-								}
-							}
-						}
+						// les finales font foi : remplacent les pending, pas de doublon vide
+						const finals = (d['steps'] as Step[]).filter(
+							(s) => s && typeof s === 'object' && typeof (s as Step).tool === 'string'
+						) as Step[];
+						steps.length = 0;
+						steps.push(...finals);
 					}
 					if (typeof d['thinking'] === 'string' && d['thinking']) thinking = d['thinking'] as string;
 					if (typeof d['think_secs'] === 'number') thinkSecs = d['think_secs'] as number;
