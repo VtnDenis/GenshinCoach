@@ -2,8 +2,9 @@
   python api/server.py -> http://127.0.0.1:8000 (local) ou $PORT (Render)
 Routes: GET /api/health  GET /api/showcase?uid=  GET /api/news?q=&k=
   GET /api/sessions?n=  GET /api/sessions/<id>/messages  DELETE /api/sessions/<id>
-  POST /api/chat {question,uid?,session_id?} -> {answer,model,session_id,detailed}
-  POST /api/chat/stream {question,uid?,session_id?} -> SSE (delta/done/error)
+  POST /api/chat {question,uid?,session_id?,images?} -> {answer,model,session_id,detailed}
+  POST /api/chat/stream {question,uid?,session_id?,images?} -> SSE (delta/done/error)
+  images: max 2 dataURL jpeg/png/webp/gif (~1 Mo chacune, compressées côté client).
 Sert web/ statique (pas de build). FS Render éphémère -> état via Turso (cf. store).
 """
 import json
@@ -36,7 +37,7 @@ def _json(handler, obj, code=200):
     handler.wfile.write(body)
 
 
-def _body(handler, limit=256 * 1024):
+def _body(handler, limit=6 * 1024 * 1024):
     try:
         n = int(handler.headers.get("Content-Length") or 0)
     except ValueError:
@@ -47,6 +48,31 @@ def _body(handler, limit=256 * 1024):
         return json.loads(handler.rfile.read(n).decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError):
         return {}
+
+
+IMG_MIMES = ("image/jpeg", "image/png", "image/webp", "image/gif")
+IMG_MAX = 2
+IMG_URL_MAX = 2_000_000  # ~1.5 Mo binaires par image
+
+
+def _parse_images(b):
+    """Valide b['images'] -> (list[dataURL], erreur|None). Max 2, jpeg/png/webp/gif."""
+    raw = b.get("images") or []
+    if not isinstance(raw, list):
+        return [], "images doit être une liste"
+    if len(raw) > IMG_MAX:
+        return [], f"max {IMG_MAX} images par message"
+    out = []
+    for u in raw:
+        if not isinstance(u, str) or not u.startswith("data:image/"):
+            return [], "image invalide (dataURL image attendue)"
+        mime = u[5:u.find(";")] if ";" in u[:40] else ""
+        if mime not in IMG_MIMES:
+            return [], f"format {mime or '?'} non supporté (jpeg/png/webp/gif)"
+        if len(u) > IMG_URL_MAX:
+            return [], "image trop lourde (~1 Mo max après compression)"
+        out.append(u)
+    return out, None
 
 
 def _db_error(ex):
@@ -133,19 +159,25 @@ class Handler(BaseHTTPRequestHandler):
                 q = (b.get("question") or "").strip()
                 if not q:
                     return _json(self, {"error": "question vide"}, 400)
+                imgs, img_err = _parse_images(b)
+                if img_err:
+                    return _json(self, {"error": img_err}, 400)
                 uid = str(b.get("uid") or genshin.DEFAULT_UID)
                 try:
                     sid = store.ensure_session(b.get("session_id") or "", uid)
                     sess = store.get_session(sid)
-                    hist = [{"role": m["role"], "content": m["content"]}
+                    hist = [{"role": m["role"], "content": m["content"],
+                             "images": m.get("images") or []}
                             for m in store.get_messages(sid)[-8:]]
                 except Exception as ex:
                     traceback.print_exc()
                     return _json(self, {"error": _db_error(ex)}, 500)
-                r = genshin.ask(q, uid=uid, history=hist, session_key=sid)
+                r = genshin.ask(q, uid=uid, history=hist, session_key=sid, images=imgs)
                 st = r.get("stats") or {}
                 try:
-                    store.add_message(sid, "user", q)
+                    umid = store.add_message(sid, "user", q)
+                    if imgs:
+                        store.add_attachments(umid, imgs)
                     amid = store.add_message(sid, "assistant", r["answer"])
                     store.save_thinking(amid, r.get("thinking") or "",
                                         None, st.get("llm_s"), st.get("out"))
@@ -176,11 +208,15 @@ class Handler(BaseHTTPRequestHandler):
                 q = (b.get("question") or "").strip()
                 if not q:
                     return _json(self, {"error": "question vide"}, 400)
+                imgs, img_err = _parse_images(b)
+                if img_err:
+                    return _json(self, {"error": img_err}, 400)
                 uid = str(b.get("uid") or genshin.DEFAULT_UID)
                 try:
                     sid = store.ensure_session(b.get("session_id") or "", uid)
                     sess = store.get_session(sid)
-                    hist = [{"role": m["role"], "content": m["content"]}
+                    hist = [{"role": m["role"], "content": m["content"],
+                             "images": m.get("images") or []}
                             for m in store.get_messages(sid)[-8:]]
                 except Exception as ex:
                     traceback.print_exc()
@@ -214,7 +250,8 @@ class Handler(BaseHTTPRequestHandler):
                 t_first_ans = None
                 out_tokens = None
                 try:
-                    for ev in genshin.ask_stream(q, uid=uid, history=hist, session_key=sid):
+                    for ev in genshin.ask_stream(q, uid=uid, history=hist, session_key=sid,
+                                                 images=imgs):
                         et = ev.get("type")
                         if et == "thinking":
                             d = ev.get("delta") or ""
@@ -292,7 +329,9 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         det = False
                     if answer:
-                        store.add_message(sid, "user", q)
+                        umid = store.add_message(sid, "user", q)
+                        if imgs:
+                            store.add_attachments(umid, imgs)
                         amid = store.add_message(sid, "assistant", answer)
                         store.save_thinking(amid, thinking, think_secs, answer_secs, out_tokens)
                         if not (sess or {}).get("title"):

@@ -113,6 +113,8 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS genshin_thinking(
       message_id TEXT PRIMARY KEY, thinking TEXT, secs REAL,
       answer_secs REAL, out_tokens INTEGER)""",
+    """CREATE TABLE IF NOT EXISTS genshin_attachments(
+      id TEXT PRIMARY KEY, message_id TEXT, mime TEXT, data_url TEXT, created_at REAL)""",
 ]
 
 
@@ -185,11 +187,30 @@ def list_sessions(limit=20):
 
 def get_messages(sid):
     rows = _q_resilient(
-        "SELECT m.role,m.content,m.created_at,t.thinking,t.secs,t.answer_secs,t.out_tokens "
+        "SELECT m.id,m.role,m.content,m.created_at,t.thinking,t.secs,t.answer_secs,t.out_tokens "
         "FROM genshin_messages m "
         "LEFT JOIN genshin_thinking t ON t.message_id=m.id WHERE m.session_id=? "
         "ORDER BY m.created_at ASC LIMIT 200", (sid,), fetch="all")
-    return rows or []
+    rows = rows or []
+    if not rows:
+        return rows
+    try:
+        ids = [r["id"] for r in rows if r.get("id")]
+        atts = []
+        if ids:
+            ph = ",".join("?" for _ in ids)
+            atts = _q_resilient(
+                f"SELECT message_id,mime,data_url FROM genshin_attachments "
+                f"WHERE message_id IN ({ph}) ORDER BY created_at ASC", tuple(ids), fetch="all") or []
+        by_msg = {}
+        for a in atts:
+            by_msg.setdefault(a["message_id"], []).append(a["data_url"])
+        for r in rows:
+            r["images"] = by_msg.get(r.get("id"), [])
+    except Exception:
+        for r in rows:
+            r.setdefault("images", [])
+    return rows
 
 
 def add_message(sid, role, content):
@@ -218,5 +239,25 @@ def del_session(sid):
             _q_resilient("DELETE FROM genshin_thinking WHERE message_id=?", (r["id"],))
         except Exception:
             pass
+        try:
+            _q_resilient("DELETE FROM genshin_attachments WHERE message_id=?", (r["id"],))
+        except Exception:
+            pass
     _q_resilient("DELETE FROM genshin_messages WHERE session_id=?", (sid,))
     _q_resilient("DELETE FROM genshin_sessions WHERE id=?", (sid,))
+
+
+def add_attachments(mid, images):
+    """Persiste les dataURL images d'un message user (max 2, déjà validées)."""
+    import uuid as _uuid
+    now = time.time()
+    for url in (images or [])[:2]:
+        if not isinstance(url, str) or not url.startswith("data:image/"):
+            continue
+        mime = url[5:url.find(";")] if ";" in url[:40] else "image/jpeg"
+        aid = _uuid.uuid4().hex
+        try:
+            _q_resilient("INSERT INTO genshin_attachments(id,message_id,mime,data_url,created_at)"
+                         " VALUES(?,?,?,?,?)", (aid, mid, mime[:32], url, now))
+        except Exception:
+            pass

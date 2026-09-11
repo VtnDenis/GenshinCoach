@@ -21,7 +21,7 @@ GET  /api/news?q=patch+notes&k=5
 GET  /api/sessions?n=20
 GET  /api/sessions/<id>/messages
 DELETE /api/sessions/<id>
-POST /api/chat {question,uid?,session_id?}
+POST /api/chat {question,uid?,session_id?,images?}
 ```
 
 ## Prérequis jeu

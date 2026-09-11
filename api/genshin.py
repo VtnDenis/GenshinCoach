@@ -429,6 +429,9 @@ SYSTEM = ("Tu es un coach Genshin Impact francophone pour un joueur adulte qui d
           "Tu as des outils pour récupérer le vrai compte du joueur (Enka), les fiches persos, "
           "le web et le wiki : n'appelle que les outils utiles à la question, jamais à l'avance, "
           "via le mécanisme natif d'appel d'outils. "
+          "Le joueur peut joindre des captures d'écran (builds, stats, carte) : "
+          "elles te sont transmises en vision, appuie-toi sur ce que tu y vois en priorité "
+          "pour les chiffres et dis ce que tu y reconnais. "
           "Appuie-toi sur leurs résultats, ne contredis jamais le wiki, "
           "ne jamais inventer un perso, une arme ou un set, et n'affiche jamais de JSON brut "
           "ni de balises <function>/<parameter> dans ta réponse. Si un résultat d'outil manque "
@@ -611,14 +614,81 @@ def _model_id():
     return model
 
 
-def _build_msgs(question, uid=None, history=None):
+IMG_MIMES = ("image/jpeg", "image/png", "image/webp", "image/gif")
+IMG_MAX = 2
+
+
+def _clean_images(images):
+    """Garde max 2 dataURL valides (docs Meta: jpeg/png/gif/webp, user-only)."""
+    out = []
+    for u in (images or [])[:IMG_MAX]:
+        if not isinstance(u, str):
+            continue
+        u = u.strip()
+        if not u.startswith("data:image/"):
+            continue
+        mime = u[5:u.find(";")] if ";" in u[:40] else ""
+        if mime not in IMG_MIMES:
+            continue
+        if len(u) > 2_000_000:  # ~1.5 Mo binaires
+            continue
+        out.append(u)
+    return out
+
+
+def _build_msgs(question, uid=None, history=None, images=None):
     uid = str(uid or DEFAULT_UID)
     msgs = [{"role": "system", "content": SYSTEM + f"\n\nUID joueur : {uid}."}]
-    for h in (history or [])[-8:]:
-        if h.get("role") in ("user", "assistant") and h.get("content"):
-            msgs.append({"role": h["role"], "content": h["content"][:2000]})
-    msgs.append({"role": "user", "content": question})
+    hist = [h for h in (history or [])
+            if h.get("role") in ("user", "assistant") and h.get("content")][-8:]
+    # Économie tokens : seules les images du tour courant + du dernier tour
+    # historisé sont envoyées ; les plus anciennes deviennent texte seul.
+    last_hist_img = -1
+    for i, h in enumerate(hist):
+        if h.get("role") == "user" and _clean_images(h.get("images")):
+            last_hist_img = i
+    for i, h in enumerate(hist):
+        entry = {"role": h["role"], "content": (h["content"] or "")[:2000]}
+        if i == last_hist_img and not _clean_images(images):
+            entry["images"] = _clean_images(h.get("images"))
+        msgs.append(entry)
+    cur = {"role": "user", "content": question}
+    imgs = _clean_images(images)
+    if imgs:
+        cur["images"] = imgs
+    elif last_hist_img >= 0:
+        pass  # images déjà portées par l'historique
+    msgs.append(cur)
     return msgs, _tool_specs()
+
+
+def _to_chat_messages(msgs):
+    """Variante Chat Completions : content multimodal [{type:text},{type:image_url:{url}}].
+    Les tours assistant/tool sont déjà au format chat, on les recopie tels quels
+    (sans la clé interne 'images')."""
+    out = []
+    for m in msgs or []:
+        r = m.get("role")
+        if r == "user":
+            imgs = _clean_images(m.get("images"))
+            txt = m.get("content", "")
+            if imgs:
+                out.append({"role": "user", "content": [
+                    {"type": "text", "text": txt},
+                    *[{"type": "image_url", "image_url": {"url": u}} for u in imgs]]})
+            else:
+                out.append({"role": "user", "content": txt})
+        elif r == "system":
+            out.append({"role": "system", "content": m.get("content", "")})
+        elif r == "assistant":
+            e = {"role": "assistant", "content": m.get("content") or ""}
+            if m.get("tool_calls"):
+                e["tool_calls"] = m["tool_calls"]
+            out.append(e)
+        elif r == "tool":
+            out.append({"role": "tool", "tool_call_id": m.get("tool_call_id"),
+                        "content": m.get("content", "")})
+    return out
 
 
 def _parse_tool_call(c):
@@ -647,7 +717,8 @@ def _step_error(name, out):
 
 def _chat_complete(msgs, specs, session_key="", timeout=120):
     url = E("OMNIROUTE_BASE_URL").rstrip("/") + "/chat/completions"
-    payload = {"model": _model_id(), "stream": False, "messages": msgs}
+    chat_msgs = _to_chat_messages(msgs)
+    payload = {"model": _model_id(), "stream": False, "messages": chat_msgs}
     if specs:
         payload["tools"] = specs
         payload["tool_choice"] = "auto"
@@ -656,7 +727,7 @@ def _chat_complete(msgs, specs, session_key="", timeout=120):
                           headers=_llm_headers(session_key), data=payload), False
     except Exception as e:
         if specs and "400" in str(e):  # modèle sans support tools -> one-shot
-            payload = {"model": _model_id(), "stream": False, "messages": msgs}
+            payload = {"model": _model_id(), "stream": False, "messages": chat_msgs}
             return _http_json(url, method="POST", timeout=timeout,
                               headers=_llm_headers(session_key), data=payload), True
         raise
@@ -665,7 +736,8 @@ def _chat_complete(msgs, specs, session_key="", timeout=120):
 def _chat_stream(msgs, specs, box, session_key="", timeout=120):
     """Stream OpenAI-compatible SSE. Yield token strings live, fills box{content,tcs,model}."""
     url = E("OMNIROUTE_BASE_URL").rstrip("/") + "/chat/completions"
-    payload = {"model": _model_id(), "stream": True, "messages": msgs}
+    chat_msgs = _to_chat_messages(msgs)
+    payload = {"model": _model_id(), "stream": True, "messages": chat_msgs}
     if specs:
         payload["tools"] = specs
         payload["tool_choice"] = "auto"
@@ -736,7 +808,16 @@ def _to_responses_input(msgs):
         if r == "system":
             items.append({"role": "system", "content": m.get("content", "")})
         elif r == "user":
-            items.append({"role": "user", "content": m.get("content", "")})
+            imgs = _clean_images(m.get("images"))
+            txt = m.get("content", "")
+            if imgs:
+                # Doc Meta/OpenAI Responses : input_image avec image_url string
+                # (URL publique ou dataURL base64), images en user uniquement.
+                items.append({"role": "user", "content": [
+                    {"type": "input_text", "text": txt},
+                    *[{"type": "input_image", "image_url": u} for u in imgs]]})
+            else:
+                items.append({"role": "user", "content": txt})
         elif r == "assistant":
             if m.get("content"):
                 items.append({"role": "assistant", "content": m["content"]})
@@ -968,10 +1049,10 @@ def _audit_fallback_text(uid, err):
             % (err, ctx[:3000]))
 
 
-def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
+def ask(question, uid=None, history=None, showcase_text=None, session_key="", images=None):
     uid = str(uid or DEFAULT_UID)
     t_all = time.time()
-    msgs, specs = _build_msgs(question, uid, history)
+    msgs, specs = _build_msgs(question, uid, history, images)
     model = _model_id()
     answer, steps, thinking_parts = "", [], []
     seen = {}
@@ -1037,12 +1118,12 @@ def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
                       "llm_s": None, "out": None}, "llm": True}
 
 
-def ask_stream(question, uid=None, history=None, session_key=""):
+def ask_stream(question, uid=None, history=None, session_key="", images=None):
     """Générateur d'events 100% live: thinking/token au fil de l'eau, step_start
     avant chaque outil, step_end juste après, scratch si un brouillon doit être
     retiré (tour fini en tool_calls). Seule la réponse finale reste affichée."""
     uid = str(uid or DEFAULT_UID)
-    msgs, specs = _build_msgs(question, uid, history)
+    msgs, specs = _build_msgs(question, uid, history, images)
     model = _model_id()
     steps, full, thinking_parts = [], "", []
     seen = {}

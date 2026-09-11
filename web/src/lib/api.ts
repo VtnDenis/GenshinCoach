@@ -13,6 +13,7 @@ export interface StoredMsg {
 	secs?: number | null;
 	answer_secs?: number | null;
 	out_tokens?: number | null;
+	images?: string[];
 }
 
 export interface Step {
@@ -38,6 +39,7 @@ export interface Msg {
 	thinkSecs?: number | null;
 	stats?: MsgStats | null;
 	steps?: Step[] | null;
+	images?: string[] | null;
 }
 
 export const fmtDur = (s: number | null | undefined): string | null => {
@@ -136,11 +138,11 @@ export const fetchNews = (q: string, k = 5) =>
 		j<{ answer: string; results: NewsItem[] }>
 	);
 
-export const sendChat = (question: string, uid: string, session_id: string | null) =>
+export const sendChat = (question: string, uid: string, session_id: string | null, images: string[] = []) =>
 	fetch('/api/chat', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ question, uid, session_id })
+		body: JSON.stringify({ question, uid, session_id, images })
 	}).then(
 		j<{
 			answer: string;
@@ -161,7 +163,8 @@ export const sendChatStream = async (
 	onThinking?: (t: string) => void,
 	onStep?: (s: Step) => void,
 	onStepStart?: (s: Step) => void,
-	onScratch?: (n: number) => void
+	onScratch?: (n: number) => void,
+	images: string[] = []
 ): Promise<{
 	answer: string;
 	thinking: string;
@@ -175,7 +178,7 @@ export const sendChatStream = async (
 	const r = await fetch('/api/chat/stream', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ question, uid, session_id })
+		body: JSON.stringify({ question, uid, session_id, images })
 	});
 	if (!r.ok || !r.body) throw new Error(`Erreur ${r.status}`);
 	const reader = r.body.getReader();

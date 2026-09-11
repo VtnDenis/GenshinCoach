@@ -29,6 +29,7 @@
 
 	let msgs: Msg[] = $state([]);
 	let draft = $state('');
+	let pendingImages: string[] = $state([]);
 	let busy = $state(false);
 	let sessions: Session[] = $state([]);
 	let showcase = $state<Showcase | null>(null);
@@ -180,6 +181,7 @@
 				return {
 					role: m.role === 'user' ? 'user' : 'assistant',
 					text: m.content,
+					images: m.images ?? null,
 					thinking: m.thinking ?? null,
 					thinkSecs: m.secs ?? null,
 					steps: null,
@@ -232,9 +234,11 @@
 
 	async function send() {
 		const q = draft.trim();
-		if (!q || busy) return;
+		if ((!q && pendingImages.length === 0) || busy) return;
+		const toSend = pendingImages;
+		pendingImages = [];
 		draft = '';
-		msgs = [...msgs, { role: 'user', text: q }];
+		msgs = [...msgs, { role: 'user', text: q || '(capture jointe)', images: toSend.length ? toSend : null }];
 		busy = true;
 		scrollBottom();
 		msgs = [...msgs, { role: 'assistant', text: '' }];
@@ -297,13 +301,13 @@
 		};
 		try {
 			try {
-				const r = await sendChatStream(q, uid, sid, paint, paintThinking, paintStep, paintStepStart, paintScratch);
+				const r = await sendChatStream(q || 'Analyse cette capture et dis-moi quoi optimiser.', uid, sid, paint, paintThinking, paintStep, paintStepStart, paintScratch, toSend);
 				sid = r.session_id;
 				setSid(sid);
 				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs, r.stats, r.steps?.length ? r.steps : streamedSteps);
 			} catch (e) {
 				if (streamed) throw e; // partiel déjà affiché : on ajoute l'erreur dessous
-				const r = await sendChat(q, uid, sid); // repli batch
+				const r = await sendChat(q || 'Analyse cette capture et dis-moi quoi optimiser.', uid, sid, toSend); // repli batch
 				sid = r.session_id;
 				setSid(sid);
 				finish(r.answer, r.model, r.thinking || null, null, {
@@ -334,7 +338,10 @@
 	}
 
 	function exportMd() {
-		const body = msgs.map((m) => (m.role === 'user' ? `## Joueur\n\n${m.text}` : `## Coach\n\n${m.text}`)).join('\n\n');
+		const body = msgs.map((m) => {
+			const imgs = m.role === 'user' && m.images?.length ? `\n\n*[${m.images.length} capture(s) jointe(s) — non incluses dans l'export]*` : '';
+			return (m.role === 'user' ? `## Joueur\n\n${m.text}${imgs}` : `## Coach\n\n${m.text}`);
+		}).join('\n\n');
 		const blob = new Blob([`# GenshinCoach — conversation\n\n${body}\n`], { type: 'text/markdown' });
 		const a = document.createElement('a');
 		a.href = URL.createObjectURL(blob);
@@ -567,11 +574,25 @@
 					{#each msgs as m, i (i + '-' + m.role)}
 						<div use:rise class="w-full {m.role === 'user' ? 'flex justify-end' : ''}">
 							{#if m.role === 'user'}
-								<p
-									class="max-w-[88%] rounded-card rounded-br-md bg-ink px-3.5 py-2.5 text-sm whitespace-pre-wrap text-[var(--surface)] shadow-btn sm:max-w-[75%]"
-								>
-									{m.text}
-								</p>
+								<div class="flex max-w-[88%] flex-col items-end gap-1.5 sm:max-w-[75%]">
+									{#if m.images?.length}
+										<div class="flex flex-wrap justify-end gap-1.5">
+											{#each m.images as url, k}
+												<img
+													src={url}
+													alt="Capture jointe {k + 1}"
+													class="h-24 w-24 rounded-xl border border-line object-cover shadow-btn"
+													loading="lazy"
+												/>
+											{/each}
+										</div>
+									{/if}
+									<p
+										class="rounded-card rounded-br-md bg-ink px-3.5 py-2.5 text-sm whitespace-pre-wrap text-[var(--surface)] shadow-btn"
+									>
+										{m.text}
+									</p>
+								</div>
 							{:else}
 								<div class="w-full min-w-0">
 									{#if !m.text && busy && i === msgs.length - 1}
@@ -624,6 +645,7 @@
 				<div class="mx-auto w-full max-w-3xl px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
 					<PromptBar
 						bind:draft
+						bind:images={pendingImages}
 						{busy}
 						selectedLabel={null}
 						onSend={send}
