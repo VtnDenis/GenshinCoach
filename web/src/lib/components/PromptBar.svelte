@@ -35,7 +35,7 @@
 </script>
 
 <div
-	class="rounded-[26px] border border-line bg-surface p-2 shadow-overlay transition-shadow focus-within:border-sport/60 focus-within:shadow-[0_16px_48px_rgb(252_76_2/0.22)]"
+	class="rounded-[26px] border border-line bg-surface p-2 shadow-overlay transition-shadow focus-within:border-sport/60 focus-within:shadow-[0_16px_48px_rgb(138_100_32/0.25)]"
 >
 	{#if selectedLabel}
 		<div class="flex flex-wrap gap-1.5 px-1 pt-1 pb-2">

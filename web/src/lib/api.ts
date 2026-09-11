@@ -62,6 +62,19 @@ export const setUid = (v: string) => {
 		/* private mode */
 	}
 };
+export const EL_COLOR: Record<string, string> = {
+	Fire: 'var(--pyro)',
+	Water: 'var(--hydro)',
+	Wind: 'var(--anemo)',
+	Electric: 'var(--electro)',
+	Grass: 'var(--dendro)',
+	Ice: 'var(--cryo)',
+	Rock: 'var(--geo)'
+};
+
+export const rarColor = (rarity: number) =>
+	rarity >= 5 ? 'var(--rar5)' : 'var(--rar4)';
+
 export const getSid = () => {
 	try {
 		return localStorage.getItem(SID_KEY);

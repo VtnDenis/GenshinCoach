@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import type { Session, ShowcaseChar } from '$lib/api';
+	import { EL_COLOR, rarColor, type Session, type ShowcaseChar } from '$lib/api';
 
 	let {
 		sessions,
@@ -164,7 +164,11 @@
 					{#each filteredChars as c (c.id)}
 						<div class="mb-0.5 rounded-control border border-transparent px-2 py-1.5 hover:bg-hover">
 							<span class="block truncate text-[13px] font-medium text-ink">
-								{c.name} · {c.level}
+								<span
+									class="mr-1 inline-block size-2 rounded-full align-middle"
+									style="background:{rarColor(c.rarity)}"
+									aria-hidden="true"
+								></span>{c.name} · {c.level}
 							</span>
 							<span class="block text-[11px] text-ink-3 tabular-nums">
 								{c.rarity}★{c.crit_rate ? ` · crit ${c.crit_rate.toFixed(0)}/${(c.crit_dmg ?? 0).toFixed(0)}` : ''}{(c.findings?.length ?? 0) ? ` · ${c.findings?.length} pt` : ''}

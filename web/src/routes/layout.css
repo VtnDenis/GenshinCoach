@@ -6,7 +6,7 @@
 @theme inline {
 	--font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 	--font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-	--font-display: 'Anton', 'Arial Narrow', ui-sans-serif, sans-serif;
+	--font-display: 'Baloo 2', 'Trebuchet MS', ui-sans-serif, sans-serif;
 
 	--color-page: var(--page);
 	--color-canvas: var(--canvas);
@@ -31,6 +31,15 @@
 	--color-sport-soft: var(--sport-soft);
 	--color-banner: var(--banner-bg);
 	--color-banner-border: var(--banner-border);
+	--color-pyro: var(--pyro);
+	--color-hydro: var(--hydro);
+	--color-anemo: var(--anemo);
+	--color-electro: var(--electro);
+	--color-dendro: var(--dendro);
+	--color-cryo: var(--cryo);
+	--color-geo: var(--geo);
+	--color-rar5: var(--rar5);
+	--color-rar4: var(--rar4);
 
 	--shadow-hairline: var(--shadow-hairline);
 	--shadow-btn: var(--shadow-btn);
@@ -45,69 +54,87 @@
 }
 
 :root {
-	--page: #f2f2f0;
-	--canvas: #e9e9e6;
-	--surface: #ffffff;
-	--surface-warm: color-mix(in srgb, #ffffff 93%, #fc4c02 7%);
-	--inset: #f0f0ee;
-	--field: #e9e9e6;
-	--hover: #ececea;
-	--hover-2: #e6e6e3;
-	--ink: #1c1e21;
-	--ink-2: #5b6068;
-	--ink-3: #6f7680;
-	--line: #e1e2e4;
-	--line-strong: #cfd2d6;
-	--accent: #1c1e21;
-	--accent-ink: #c2410c;
-	--green: #4f7d5d;
-	--orange: #ea580c;
-	--red: #e3474c;
-	--sport: #f97316;
-	--sport-strong: #c2410c;
-	--sport-soft: #fff3e8;
-	--banner-bg: #fffaf2;
-	--banner-border: #fb923c;
+	--page: #ece5d8;
+	--canvas: #e3dac4;
+	--surface: #fbf7ec;
+	--surface-warm: color-mix(in srgb, #fbf7ec 90%, #c9a227 10%);
+	--inset: #e7dfc9;
+	--field: #ded4b8;
+	--hover: #e2d8bd;
+	--hover-2: #d9cdae;
+	--ink: #4a4136;
+	--ink-2: #6e6250;
+	--ink-3: #8d8069;
+	--line: #d3c8a8;
+	--line-strong: #b7a67e;
+	--accent: #4a4136;
+	--accent-ink: #8a6420;
+	--green: #5d8a4e;
+	--orange: #d2691e;
+	--red: #b8433a;
+	--sport: #c9a227;
+	--sport-strong: #8a6420;
+	--sport-soft: #f3e8c8;
+	--banner-bg: #f7efda;
+	--banner-border: #c9a227;
+	--pyro: #e0703a;
+	--hydro: #3aa7e0;
+	--anemo: #5aae8f;
+	--electro: #9a72b8;
+	--dendro: #8aa832;
+	--cryo: #6fb3c9;
+	--geo: #d29a26;
+	--rar5: #b78c1e;
+	--rar4: #8a5fc0;
 	--shadow-glass:
-		0 0 0 1px rgb(20 24 31 / 0.08),
-		0 8px 32px rgb(47 111 236 / 0.12);
-	--shadow-hairline: 0 0 0 1px rgb(20 24 31 / 0.08);
+		0 0 0 1px rgb(74 65 54 / 0.12),
+		0 8px 32px rgb(138 100 32 / 0.12);
+	--shadow-hairline: 0 0 0 1px rgb(74 65 54 / 0.12);
 	--shadow-btn:
-		0 0 0 1px rgb(20 24 31 / 0.08),
-		0 1px 2px rgb(20 24 31 / 0.08);
+		0 0 0 1px rgb(74 65 54 / 0.12),
+		0 1px 2px rgb(74 65 54 / 0.1);
 	--shadow-overlay:
-		0 0 0 1px rgb(20 24 31 / 0.08),
-		0 12px 32px rgb(20 24 31 / 0.14);
+		0 0 0 1px rgb(74 65 54 / 0.12),
+		0 12px 32px rgb(74 65 54 / 0.18);
 	--shadow-card:
-		0 0 0 1px rgb(20 24 31 / 0.08),
-		0 1px 2px rgb(20 24 31 / 0.06);
+		0 0 0 1px rgb(74 65 54 / 0.12),
+		0 1px 2px rgb(74 65 54 / 0.08);
 	color-scheme: light;
 }
 
 html.dark {
-	--page: #0e1012;
-	--canvas: #15181b;
-	--surface: #1f2329;
-	--surface-warm: color-mix(in srgb, #1f2329 90%, #fc4c02 10%);
-	--inset: #1a1e22;
-	--field: #262b31;
-	--hover: #2b3138;
-	--hover-2: #272d34;
-	--ink: #f2f4f5;
-	--ink-2: #b8bec6;
-	--ink-3: #878d95;
-	--line: #33373d;
-	--line-strong: #4a5058;
-	--accent: #f2f4f5;
-	--accent-ink: #ff7a3d;
-	--green: #6fae8e;
-	--orange: #f59e0b;
-	--red: #ee5c61;
-	--sport: #f97316;
-	--sport-strong: #fb923c;
-	--sport-soft: #2b1a10;
-	--banner-bg: #241410;
-	--banner-border: #c2410c;
+	--page: #141b2e;
+	--canvas: #1a2236;
+	--surface: #212b45;
+	--surface-warm: color-mix(in srgb, #212b45 88%, #c9a227 12%);
+	--inset: #1b2338;
+	--field: #2a3550;
+	--hover: #2d3a58;
+	--hover-2: #28324c;
+	--ink: #ece7d6;
+	--ink-2: #c3bca4;
+	--ink-3: #8f8a76;
+	--line: #354165;
+	--line-strong: #4a5a82;
+	--accent: #ece7d6;
+	--accent-ink: #d9b96a;
+	--green: #7fae72;
+	--orange: #e09a4a;
+	--red: #d96a60;
+	--sport: #d3bc8e;
+	--sport-strong: #e8cf96;
+	--sport-soft: #2c2617;
+	--banner-bg: #232a20;
+	--banner-border: #8a6420;
+	--pyro: #f08a4e;
+	--hydro: #5cc0f2;
+	--anemo: #7cc9ab;
+	--electro: #bd9bd4;
+	--dendro: #b3d14e;
+	--cryo: #93cfe4;
+	--geo: #f2b73e;
+	--rar5: #e3c57c;
+	--rar4: #b795e0;
 	--shadow-glass:
 		0 0 0 1px rgb(255 255 255 / 0.1),
 		0 8px 32px rgb(0 0 0 / 0.45);
@@ -125,17 +152,8 @@ html.dark {
 }
 
 body {
-	/* ponytail: transparent -> le ShaderField three.js global est le fond (z-index -1) */
-	background: transparent;
+	background: var(--page);
 	color: var(--ink);
-}
-
-/* ponytail: fond OSM trop clair en dark -> inversion locale, pas de tuiles payantes */
-html.dark .leaflet-container {
-	background: var(--inset);
-}
-html.dark .leaflet-tile-pane {
-	filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.92);
 }
 
 /* ---- shared motion (Beautiful UI easings) ---- */
@@ -306,12 +324,12 @@ input[type='range'].rc-range::-moz-range-thumb {
 	background-size: 180px 180px;
 }
 
-/* ---- race-instrument display numerals ---- */
+/* ---- chiffres display arrondis, esprit Genshin ---- */
 .rc-numerals {
 	font-family: var(--font-display);
-	line-height: 0.9;
-	letter-spacing: 0.005em;
-	transform: skewX(-5deg);
+	font-weight: 700;
+	line-height: 0.95;
+	letter-spacing: 0.01em;
 }
 
 /* ---- chrome teinté + liseré gradient (palette du shader dans les composants) ---- */
@@ -326,19 +344,24 @@ input[type='range'].rc-range::-moz-range-thumb {
 		1;
 }
 
-/* ---- design orange ref photos : boutons pill + banner notice ---- */
+/* ---- boutons dorés façon Genshin ---- */
 .rc-btn-primary {
-	background: var(--sport);
-	color: #fff;
+	background: linear-gradient(180deg, var(--sport-strong), var(--sport));
+	color: #2a2113;
 	box-shadow:
-		0 0 0 1px rgb(20 24 31 / 0.06),
-		0 10px 28px rgb(249 115 22 / 0.38);
+		0 0 0 1px rgb(74 65 54 / 0.2),
+		0 10px 28px rgb(138 100 32 / 0.35);
 }
 .rc-btn-primary:hover {
-	background: var(--sport-strong);
+	filter: brightness(1.06);
+	background: linear-gradient(180deg, var(--sport-strong), var(--sport));
+}
+html.dark .rc-btn-primary {
+	color: #241c0d;
 }
 html.dark .rc-btn-primary:hover {
-	background: var(--sport-strong);
+	filter: brightness(1.06);
+	background: linear-gradient(180deg, var(--sport-strong), var(--sport));
 }
 .rc-btn-outline {
 	background: var(--sport-soft);
@@ -349,20 +372,20 @@ html.dark .rc-btn-outline {
 	color: var(--sport-strong);
 }
 .rc-btn-white {
-	background: #fff;
-	color: #111;
+	background: #fffdf5;
+	color: #4a4136;
 	box-shadow: var(--shadow-btn);
 }
 html.dark .rc-btn-white {
-	background: #3a3f46;
-	color: #fff;
+	background: #2c3a5e;
+	color: #ece7d6;
 }
 .rc-notice {
 	background: var(--banner-bg);
 	border: 1.5px solid var(--banner-border);
 	box-shadow:
 		0 0 0 4px color-mix(in srgb, var(--banner-bg) 60%, transparent),
-		0 18px 44px rgb(249 115 22 / 0.18);
+		0 18px 44px rgb(138 100 32 / 0.2);
 }
 html.dark .rc-notice {
 	box-shadow:

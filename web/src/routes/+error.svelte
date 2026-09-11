@@ -24,7 +24,7 @@
 			<button
 				type="button"
 				onclick={() => goto('/')}
-				class="rc-press min-h-11 w-full rounded-control bg-sport px-4 text-sm font-medium text-white"
+				class="rc-press min-h-11 w-full rounded-control bg-sport px-4 text-sm font-semibold text-[#2a2113]"
 				>Retour au coach</button
 			>
 			<div class="flex gap-1.5">

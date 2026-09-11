@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { fetchShowcase, getUid, setUid, type Showcase } from '$lib/api';
+	import { fetchShowcase, getUid, setUid, EL_COLOR, rarColor, type Showcase } from '$lib/api';
 	import Wordmark from '$lib/components/Wordmark.svelte';
 	import LoadingState from '$lib/components/LoadingState.svelte';
 	import { rise } from '$lib/motion';
@@ -84,8 +84,13 @@
 				{#each showcase.characters.length ? showcase.characters : showcase.preview as c (c.id)}
 					<li use:rise class="rounded-card border border-line bg-surface px-4 py-3 shadow-card">
 						<p class="text-[15px] font-semibold tracking-tight">
+							<span style="color:{rarColor(c.rarity)}">★{c.rarity}</span>
 							{c.name}
-							<span class="ml-1 font-mono text-xs font-normal text-ink-3">niv. {c.level} · {c.rarity}★ · {c.element}</span>
+							<span class="ml-1 font-mono text-xs font-normal text-ink-3">niv. {c.level}</span>
+							<span
+								class="ml-1 rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold"
+								style="color:{EL_COLOR[c.element] ?? 'var(--ink-3)'};background:color-mix(in srgb, {EL_COLOR[c.element] ?? 'var(--ink-3)'} 14%, transparent)"
+							>{c.element}</span>
 						</p>
 						{#if c.crit_rate}
 							<p class="mt-0.5 font-mono text-xs text-ink-2 tabular-nums">
