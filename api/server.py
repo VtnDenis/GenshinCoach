@@ -52,8 +52,8 @@ def _body(handler, limit=256 * 1024):
 def _db_error(ex):
     """Message clair quand la BDD est injoignable (au lieu d'un 500 vide)."""
     s = str(ex)
-    if "401" in s or "Unauthorized" in s:
-        return ("BDD inaccessible (401 Unauthorized) : le TURSO_AUTH_TOKEN ne correspond "
+    if "401" in s or "Unauthorized" in s or "InvalidToken" in s:
+        return ("BDD inaccessible (token refusé) : le TURSO_AUTH_TOKEN ne correspond "
                 "pas à cette BDD. Mets à jour TURSO_AUTH_TOKEN (local : .env, prod : dashboard Render).")
     if "404" in s or "not found" in s.lower():
         return "BDD introuvable : vérifie TURSO_DATABASE_URL."
@@ -260,6 +260,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    store.init_db()
+    try:
+        store.init_db()
+    except Exception as ex:
+        # BDD injoignable (token périmé, URL fausse…) : on démarre quand même,
+        # les endpoints renvoient un message clair au lieu d'un crash au boot.
+        print(f"WARN init_db: {ex} (le serveur démarre, l'historique est dégradé)", flush=True)
     print(f"GenshinCoach on {HOST}:{PORT} (web={WEB_DIR})", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
