@@ -89,6 +89,17 @@ def _q(sql, args=(), fetch=None):
     return _local(sql, args, fetch)
 
 
+def _q_resilient(sql, args=(), fetch=None):
+    """_q + auto-init si les tables manquent (ex. nouvelle BDD Turso vide), 1 retry."""
+    try:
+        return _q(sql, args, fetch)
+    except Exception as ex:
+        if "no such table" not in str(ex).lower():
+            raise
+        init_db()
+        return _q(sql, args, fetch)
+
+
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS genshin_sessions(
       id TEXT PRIMARY KEY, uid TEXT, title TEXT, created_at REAL, updated_at REAL)""",
@@ -105,47 +116,61 @@ def init_db():
 def new_session(uid, title=""):
     sid = uuid.uuid4().hex[:12]
     now = time.time()
-    _q("INSERT INTO genshin_sessions(id,uid,title,created_at,updated_at) VALUES(?,?,?,?,?)",
-       (sid, str(uid or ""), title[:80], now, now))
+    _q_resilient("INSERT INTO genshin_sessions(id,uid,title,created_at,updated_at) VALUES(?,?,?,?,?)",
+                 (sid, str(uid or ""), title[:80], now, now))
     return sid
 
 
 def ensure_session(sid, uid):
     if not sid:
         return new_session(uid)
-    rows = _q("SELECT id FROM genshin_sessions WHERE id=?", (sid,), fetch="all")
+    rows = _q_resilient("SELECT id FROM genshin_sessions WHERE id=?", (sid,), fetch="all")
     if rows:
         return sid
     now = time.time()
-    _q("INSERT INTO genshin_sessions(id,uid,title,created_at,updated_at) VALUES(?,?,?,?,?)",
-       (sid, str(uid or ""), "", now, now))
+    _q_resilient("INSERT INTO genshin_sessions(id,uid,title,created_at,updated_at) VALUES(?,?,?,?,?)",
+                 (sid, str(uid or ""), "", now, now))
     return sid
 
 
+def get_session(sid):
+    rows = _q_resilient("SELECT id,uid,title,created_at,updated_at FROM genshin_sessions WHERE id=?",
+                        (sid,), fetch="all")
+    return rows[0] if rows else None
+
+
+def set_title(sid, title):
+    t = (title or "").strip().replace("\n", " ")[:60]
+    if not t:
+        return
+    _q_resilient("UPDATE genshin_sessions SET title=?,updated_at=? WHERE id=?",
+                 (t, time.time(), sid))
+
+
 def list_sessions(limit=20):
-    rows = _q("SELECT id,uid,title,created_at,updated_at FROM genshin_sessions "
-              "ORDER BY updated_at DESC LIMIT ?", (max(1, min(50, limit)),), fetch="all")
+    rows = _q_resilient("SELECT id,uid,title,created_at,updated_at FROM genshin_sessions "
+                        "ORDER BY updated_at DESC LIMIT ?", (max(1, min(50, limit)),), fetch="all")
     out = []
     for r in rows or []:
-        n = _q("SELECT COUNT(*) AS n FROM genshin_messages WHERE session_id=?",
-               (r["id"],), fetch="one")
+        n = _q_resilient("SELECT COUNT(*) AS n FROM genshin_messages WHERE session_id=?",
+                         (r["id"],), fetch="one")
         r["n"] = (n or {}).get("n", 0)
         out.append(r)
     return out
 
 
 def get_messages(sid):
-    rows = _q("SELECT role,content,created_at FROM genshin_messages WHERE session_id=? "
-              "ORDER BY created_at ASC LIMIT 200", (sid,), fetch="all")
+    rows = _q_resilient("SELECT role,content,created_at FROM genshin_messages WHERE session_id=? "
+                        "ORDER BY created_at ASC LIMIT 200", (sid,), fetch="all")
     return rows or []
 
 
 def add_message(sid, role, content):
-    _q("INSERT INTO genshin_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
-       (uuid.uuid4().hex, sid, role, content, time.time()))
-    _q("UPDATE genshin_sessions SET updated_at=? WHERE id=?", (time.time(), sid))
+    _q_resilient("INSERT INTO genshin_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
+                 (uuid.uuid4().hex, sid, role, content, time.time()))
+    _q_resilient("UPDATE genshin_sessions SET updated_at=? WHERE id=?", (time.time(), sid))
 
 
 def del_session(sid):
-    _q("DELETE FROM genshin_messages WHERE session_id=?", (sid,))
-    _q("DELETE FROM genshin_sessions WHERE id=?", (sid,))
+    _q_resilient("DELETE FROM genshin_messages WHERE session_id=?", (sid,))
+    _q_resilient("DELETE FROM genshin_sessions WHERE id=?", (sid,))

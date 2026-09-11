@@ -3,6 +3,7 @@
 	import {
 		fetchShowcase,
 		sendChat,
+		sendChatStream,
 		listSessions,
 		getMessages,
 		deleteSession,
@@ -47,6 +48,7 @@
 	let openingId = $state<string | null>(null);
 	let deletingId = $state<string | null>(null);
 	let loadingSessions = $state(true);
+	let sessionsError = $state('');
 
 	let { initialSid = null }: { initialSid?: string | null } = $props();
 
@@ -129,8 +131,10 @@
 		try {
 			const r = await listSessions();
 			sessions = r.sessions;
-		} catch {
-			/* offline, on garde le cache */
+			sessionsError = '';
+		} catch (e) {
+			// Historique indisponible (BDD KO, backend éteint…) : on l'affiche au lieu de "Aucune conversation".
+			sessionsError = (e as Error).message;
 		} finally {
 			loadingSessions = false;
 		}
@@ -215,15 +219,36 @@
 		msgs = [...msgs, { role: 'user', text: q }];
 		busy = true;
 		scrollBottom();
+		msgs = [...msgs, { role: 'assistant', text: '' }];
+		const idx = msgs.length - 1;
+		let streamed = '';
+		const paint = (t: string) => {
+			streamed += t;
+			msgs = msgs.map((m, i) => (i === idx ? { ...m, text: streamed } : m));
+			scrollBottom();
+		};
+		const finish = (text: string, model?: string | null) => {
+			msgs = msgs.map((m, i) =>
+				i === idx ? { role: 'assistant', text, model: model ?? m.model } : m
+			);
+		};
 		try {
-			const r = await sendChat(q, uid, sid);
-			sid = r.session_id;
-			setSid(sid);
-			msgs = [...msgs, { role: 'assistant', text: r.answer, model: r.model }];
+			try {
+				const r = await sendChatStream(q, uid, sid, paint);
+				sid = r.session_id;
+				setSid(sid);
+				finish(r.answer || streamed, r.model);
+			} catch (e) {
+				if (streamed) throw e; // partiel déjà affiché : on ajoute l'erreur dessous
+				const r = await sendChat(q, uid, sid); // repli batch
+				sid = r.session_id;
+				setSid(sid);
+				finish(r.answer, r.model);
+			}
 			syncUrl(true);
 			refreshSessions();
 		} catch (e) {
-			msgs = [...msgs, { role: 'assistant', text: `Erreur : ${(e as Error).message}` }];
+			finish(streamed ? `${streamed}\n\nErreur : ${(e as Error).message}` : `Erreur : ${(e as Error).message}`);
 		} finally {
 			busy = false;
 			scrollBottom();
@@ -440,6 +465,14 @@
 								>
 									Démarrer une nouvelle conversation
 								</button>
+							</p>
+						</div>
+					{/if}
+					{#if sessionsError}
+						<div class="rounded-window bg-canvas p-4 shadow-hairline sm:p-5" role="alert">
+							<p class="text-sm leading-relaxed text-ink">
+								<strong class="font-semibold">Historique indisponible.</strong>
+								{sessionsError}
 							</p>
 						</div>
 					{/if}

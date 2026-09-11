@@ -111,6 +111,63 @@ export const sendChat = (question: string, uid: string, session_id: string | nul
 		body: JSON.stringify({ question, uid, session_id })
 	}).then(j<{ answer: string; model: string; session_id: string; detailed: boolean }>);
 
+export const sendChatStream = async (
+	question: string,
+	uid: string,
+	session_id: string | null,
+	onToken: (t: string) => void
+): Promise<{ answer: string; model: string; session_id: string; detailed: boolean }> => {
+	const r = await fetch('/api/chat/stream', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ question, uid, session_id })
+	});
+	if (!r.ok || !r.body) throw new Error(`Erreur ${r.status}`);
+	const reader = r.body.getReader();
+	const dec = new TextDecoder();
+	let buf = '';
+	let full = '';
+	let sid = session_id ?? '';
+	let model = '';
+	let detailed = false;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		buf += dec.decode(value, { stream: true });
+		let idx: number;
+		while ((idx = buf.indexOf('\n\n')) >= 0) {
+			const raw = buf.slice(0, idx);
+			buf = buf.slice(idx + 2);
+			for (const line of raw.split('\n')) {
+				const t = line.trim();
+				if (!t.startsWith('data:')) continue;
+				const payload = t.slice(5).trim();
+				if (!payload || payload === '[DONE]') continue;
+				let ev: Record<string, unknown>;
+				try {
+					ev = JSON.parse(payload) as Record<string, unknown>;
+				} catch {
+					continue;
+				}
+				if (typeof ev['delta'] === 'string' && ev['delta']) {
+					full += ev['delta'] as string;
+					onToken(ev['delta'] as string);
+				} else if (ev['meta'] && typeof (ev['meta'] as Record<string, unknown>)['session_id'] === 'string') {
+					sid = (ev['meta'] as Record<string, unknown>)['session_id'] as string;
+				} else if (ev['done']) {
+					const d = ev['done'] as Record<string, unknown>;
+					if (typeof d['session_id'] === 'string') sid = d['session_id'] as string;
+					if (typeof d['model'] === 'string') model = d['model'] as string;
+					detailed = d['detailed'] === true;
+				} else if (typeof ev['error'] === 'string') {
+					throw new Error(ev['error'] as string);
+				}
+			}
+		}
+	}
+	return { answer: full, model, session_id: sid, detailed };
+};
+
 export const listSessions = (n = 20) =>
 	fetch(`/api/sessions?n=${n}`).then(j<{ sessions: Session[] }>);
 

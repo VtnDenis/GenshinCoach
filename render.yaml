@@ -15,6 +15,8 @@ services:
         value: opencode-go/muse-spark-1.3-contributor
       - key: GENSHIN_DEFAULT_UID
         value: "702342940"
+      - key: TURSO_DATABASE_URL
+        value: libsql://genshin-coach-vtndenis.aws-eu-west-1.turso.io
       - key: GENSHIN_REGION
         value: EU
       - key: PYTHON_VERSION

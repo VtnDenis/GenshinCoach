@@ -3,6 +3,7 @@
 Routes: GET /api/health  GET /api/showcase?uid=  GET /api/news?q=&k=
   GET /api/sessions?n=  GET /api/sessions/<id>/messages  DELETE /api/sessions/<id>
   POST /api/chat {question,uid?,session_id?} -> {answer,model,session_id,detailed}
+  POST /api/chat/stream {question,uid?,session_id?} -> SSE (delta/done/error)
 Sert web/ statique (pas de build). FS Render éphémère -> état via Turso (cf. store).
 """
 import json
@@ -48,6 +49,17 @@ def _body(handler, limit=256 * 1024):
         return {}
 
 
+def _db_error(ex):
+    """Message clair quand la BDD est injoignable (au lieu d'un 500 vide)."""
+    s = str(ex)
+    if "401" in s or "Unauthorized" in s:
+        return ("BDD inaccessible (401 Unauthorized) : le TURSO_AUTH_TOKEN ne correspond "
+                "pas à cette BDD. Mets à jour TURSO_AUTH_TOKEN (local : .env, prod : dashboard Render).")
+    if "404" in s or "not found" in s.lower():
+        return "BDD introuvable : vérifie TURSO_DATABASE_URL."
+    return s[:300]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "GenshinCoach/1.0"
 
@@ -87,10 +99,18 @@ class Handler(BaseHTTPRequestHandler):
                 return _json(self, r)
             if path == "/api/sessions":
                 n = int((qs.get("n") or ["20"])[0])
-                return _json(self, {"sessions": store.list_sessions(n)})
+                try:
+                    return _json(self, {"sessions": store.list_sessions(n)})
+                except Exception as ex:
+                    traceback.print_exc()
+                    return _json(self, {"error": _db_error(ex)}, 500)
             seg = path.strip("/").split("/")
             if len(seg) == 4 and seg[0] == "api" and seg[1] == "sessions" and seg[3] == "messages":
-                return _json(self, {"messages": store.get_messages(seg[2])})
+                try:
+                    return _json(self, {"messages": store.get_messages(seg[2])})
+                except Exception as ex:
+                    traceback.print_exc()
+                    return _json(self, {"error": _db_error(ex)}, 500)
             # statique
             return self._static(path)
         except Exception as ex:
@@ -107,12 +127,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not q:
                     return _json(self, {"error": "question vide"}, 400)
                 uid = str(b.get("uid") or genshin.DEFAULT_UID)
-                sid = store.ensure_session(b.get("session_id") or "", uid)
-                hist = [{"role": m["role"], "content": m["content"]}
-                        for m in store.get_messages(sid)[-8:]]
+                try:
+                    sid = store.ensure_session(b.get("session_id") or "", uid)
+                    sess = store.get_session(sid)
+                    hist = [{"role": m["role"], "content": m["content"]}
+                            for m in store.get_messages(sid)[-8:]]
+                except Exception as ex:
+                    traceback.print_exc()
+                    return _json(self, {"error": _db_error(ex)}, 500)
                 r = genshin.ask(q, uid=uid, history=hist, session_key=sid)
-                store.add_message(sid, "user", q)
-                store.add_message(sid, "assistant", r["answer"])
+                try:
+                    store.add_message(sid, "user", q)
+                    store.add_message(sid, "assistant", r["answer"])
+                    if not (sess or {}).get("title"):
+                        store.set_title(sid, q)
+                except Exception as ex:
+                    traceback.print_exc()
+                    return _json(self, {"error": _db_error(ex)}, 500)
                 try:
                     data = genshin.fetch_showcase(uid)
                     det = bool(data.get("avatarInfoList"))
@@ -120,6 +151,74 @@ class Handler(BaseHTTPRequestHandler):
                     det = False
                 return _json(self, {"answer": r["answer"], "model": r["model"],
                                     "session_id": sid, "detailed": det})
+            if path == "/api/chat/stream":
+                b = _body(self)
+                q = (b.get("question") or "").strip()
+                if not q:
+                    return _json(self, {"error": "question vide"}, 400)
+                uid = str(b.get("uid") or genshin.DEFAULT_UID)
+                try:
+                    sid = store.ensure_session(b.get("session_id") or "", uid)
+                    sess = store.get_session(sid)
+                    hist = [{"role": m["role"], "content": m["content"]}
+                            for m in store.get_messages(sid)[-8:]]
+                except Exception as ex:
+                    traceback.print_exc()
+                    return _json(self, {"error": _db_error(ex)}, 500)
+                msgs, _, _ = genshin.build_messages(q, uid=uid, history=hist)
+                model = genshin.E("OMNIROUTE_MODEL", "auto")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+
+                def emit(obj):
+                    self.wfile.write(("data: " + json.dumps(obj, ensure_ascii=False)
+                                      + "\n\n").encode())
+                    self.wfile.flush()
+
+                try:
+                    emit({"meta": {"session_id": sid}})
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                full = []
+                try:
+                    for tok in genshin.llm_stream(msgs, session_key=sid):
+                        full.append(tok)
+                        try:
+                            emit({"delta": tok})
+                        except (BrokenPipeError, ConnectionResetError):
+                            break
+                except Exception as ex:
+                    traceback.print_exc()
+                    try:
+                        emit({"error": str(ex)[:300]})
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                answer = "".join(full)
+                try:
+                    try:
+                        data = genshin.fetch_showcase(uid)
+                        det = bool(data.get("avatarInfoList"))
+                    except Exception:
+                        det = False
+                    if answer:
+                        store.add_message(sid, "user", q)
+                        store.add_message(sid, "assistant", answer)
+                        if not (sess or {}).get("title"):
+                            store.set_title(sid, q)
+                    emit({"done": {"session_id": sid, "model": model, "detailed": det}})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                except Exception as ex:
+                    traceback.print_exc()
+                    try:
+                        emit({"error": _db_error(ex)})
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                return
             return _json(self, {"error": "not found"}, 404)
         except Exception as ex:
             traceback.print_exc()

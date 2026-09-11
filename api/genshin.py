@@ -315,6 +315,51 @@ def maybe_news_context(question):
     return "\n".join(parts)
 
 
+def fandom_search(query, k=3):
+    """Liens canoniques Fandom (sans clé, toujours dispo)."""
+    try:
+        q = urllib.parse.urlencode({"action": "query", "list": "search",
+                                    "srsearch": query, "format": "json", "srlimit": max(1, min(5, k))})
+        d = _http_json(f"https://genshin-impact.fandom.com/api.php?{q}", timeout=15)
+        out = []
+        for r in ((d.get("query") or {}).get("search") or [])[:k]:
+            t = r.get("title", "")
+            if t:
+                out.append({"title": t,
+                            "url": "https://genshin-impact.fandom.com/wiki/" + t.replace(" ", "_")})
+        return out
+    except Exception:
+        return []
+
+
+ADVICE_RE = re.compile(r"build|arme|artefact|artéfact|team|[eé]quipe|rotation|stats?|talent|"
+                       r"constellation|monter|priorit[ée]|conseil|recommand|que faire|comment|"
+                       r"qui pull|reroll|tier|donjon|abysse|abyss|boss|farming|farm",
+                       re.IGNORECASE)
+
+
+def maybe_fact_context(question):
+    """Contexte web pour fact-check des conseils : Tavily (si clé) + Fandom (toujours)."""
+    q = question or ""
+    parts = []
+    news = maybe_news_context(q)
+    if news:
+        parts.append(news)
+    if ADVICE_RE.search(q):
+        r = tavily_search(f"Genshin Impact {q} build guide", k=5)
+        if r["answer"]:
+            parts.append("Vérif web : " + r["answer"][:800])
+        for x in r["results"][:3]:
+            parts.append(f"- {x['title']} ({x['url']}) : {x['snippet'][:250]}")
+        for x in fandom_search(f"Genshin Impact {q}", k=3):
+            parts.append(f"- Wiki Fandom : {x['title']} ({x['url']}) — à vérifier avant de conseiller.")
+        if not r["answer"] and not r["results"]:
+            for x in fandom_search(q, k=3):
+                if x not in parts:
+                    parts.append(f"- Wiki Fandom : {x['title']} ({x['url']})")
+    return "\n".join(parts)
+
+
 # ---------- LLM (OmniRoute dev / zen prod, cf. RunCoach coach.py:307) ----------
 
 def _llm_headers(session_key=""):
@@ -350,6 +395,94 @@ def _responses_text(d):
     raise RuntimeError(f"Réponse Go inattendue : {str(d)[:200]}")
 
 
+def _sse_post(url, data, headers, timeout=180):
+    """POST SSE (stdlib) : yield chaque payload 'data:' (dict JSON ou str)."""
+    body = json.dumps(data).encode()
+    h = {"User-Agent": "GenshinCoach/1.0", "Content-Type": "application/json",
+         "Accept": "text/event-stream", **(headers or {})}
+    req = urllib.request.Request(url, data=body, method="POST", headers=h)
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    event = []
+    try:
+        while True:
+            line = resp.readline()
+            if not line:
+                break
+            try:
+                s = line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
+            if s == "":
+                if event:
+                    payload = "\n".join(event)
+                    del event[:]
+                    if payload == "[DONE]":
+                        continue
+                    try:
+                        yield json.loads(payload)
+                    except ValueError:
+                        yield payload
+                continue
+            if s.startswith("data:"):
+                event.append(s[5:].strip())
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
+def _extract_delta(evt):
+    """Tente d'extraire le bout de texte d'un event SSE (2 formats supportés)."""
+    if isinstance(evt, str):
+        return evt
+    if not isinstance(evt, dict):
+        return ""
+    try:  # OpenAI /chat/completions : choices[0].delta.content
+        ch = (evt.get("choices") or [{}])[0] or {}
+        t = ((ch.get("delta") or {}).get("content")) or ch.get("text")
+        if t:
+            return t
+    except Exception:
+        pass
+    # Responses API : {"type": "response.output_text.delta", "delta": "..."}
+    if isinstance(evt.get("delta"), str) and evt["delta"]:
+        return evt["delta"]
+    if isinstance(evt.get("text"), str) and str(evt.get("type", "")).endswith("delta"):
+        return evt["text"]
+    return ""
+
+
+def llm_stream(messages, session_key=""):
+    """Yield les bouts de réponse au fil de l'eau. Repli batch si le stream échoue."""
+    base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
+    model = E("OMNIROUTE_MODEL", "auto")
+    if not base:
+        raise RuntimeError("OMNIROUTE_BASE_URL manquant")
+    if "zen/go" in base:
+        url = base + "/responses"
+        model_id = model.split("/", 1)[-1]  # opencode-go/x -> x
+        data = {"model": model_id, "stream": True,
+                "input": [{"role": m["role"], "content": m["content"]}
+                          for m in messages if m.get("role") in ("system", "user", "assistant")]}
+    else:
+        url = base + "/chat/completions"
+        data = {"model": model, "stream": True, "messages": messages}
+    got = False
+    try:
+        for evt in _sse_post(url, data, _llm_headers(session_key)):
+            t = _extract_delta(evt)
+            if t:
+                got = True
+                yield t
+    except Exception:
+        if got:
+            return  # coupe mid-stream : le partiel est déjà affiché/sauvegardé
+    if not got:  # stream vide ou incompatible : un seul bloc (le front gère pareil)
+        answer, _ = llm_complete(messages, session_key=session_key)
+        yield answer
+
+
 def llm_complete(messages, session_key=""):
     base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
     model = E("OMNIROUTE_MODEL", "auto")
@@ -372,13 +505,17 @@ def llm_complete(messages, session_key=""):
         raise RuntimeError(f"Réponse LLM inattendue : {str(d)[:200]}")
 
 
-SYSTEM = ("Tu es un gentil coach Genshin Impact qui parle français très simple, "
-          "comme à un enfant de 10 ans qui découvre le jeu. "
+SYSTEM = ("Tu es un coach Genshin Impact francophone pour un joueur adulte qui débute, "
+          "ton simple et respectueux, sans jargon technique. "
           "Tu vois le compte du joueur via Enka (niveaux, armes, artefacts, talents) et un audit automatique. "
-          "Règles : utilise des mots très simples et des phrases très courtes. "
-          "Explique chaque mot compliqué avec une image simple. "
-          "Dis UNE seule chose à faire, la plus importante, adaptée à son niveau AR/WL. "
-          "Cite les vrais chiffres du joueur mais explique ce que ça veut dire avec des mots simples. "
+          "Règles : phrases courtes, mots courants. Si tu dois employer un terme technique "
+          "(par ex. artefacts, recharge d'énergie, taux crit, constellation), donne aussitôt sa définition "
+          "simple puis ce qu'il faut faire concrètement en jeu. "
+          "Avant chaque conseil ou recommandation (build, arme, artefact, team, montée), appuie-toi sur "
+          "les infos web et wiki Fandom fournies dans le contexte : ne contredis jamais le wiki, "
+          "ne jamais inventer un perso, une arme ou un set. Si le contexte web est vide, reste sur "
+          "l'audit Enka et dis-le franchement. "
+          "Cite les vrais chiffres du joueur, priorise une seule action adaptée à son AR/WL. "
           "À AR30, pas de farm d'artefacts 5 étoiles avant l'AR45 : pense niveaux, armes, talents, "
           "statues, histoires et events. Propose des teams seulement avec ses persos, sauf un seul perso "
           "à aller chercher en plus. "
@@ -386,26 +523,35 @@ SYSTEM = ("Tu es un gentil coach Genshin Impact qui parle français très simple
           "avec Échap puis clique sur ta carte de profil puis sur le petit crayon en haut à droite puis sur "
           "l'onglet Vitrine puis ajoute tes persos et coche 'Afficher les détails des personnages'. "
           "Ne jamais inventer un autre chemin. "
-          "Style obligatoire : 3 à 5 phrases courtes en texte simple, ton chaleureux et rassurant. "
-          "Interdit : listes à puces, listes numérotées, tableaux, markdown compliqué, jargon non expliqué, "
-          "longs paragraphes, plusieurs conseils à la fois.")
+          "Style obligatoire : 4 à 6 phrases courtes en texte simple, sans listes à puces, sans listes "
+          "numérotées, sans tableaux, sans markdown compliqué.")
 
 
-def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
+def build_messages(question, uid=None, history=None, showcase_text=None):
+    """Construit les messages LLM (Enka + fact-check + historique). -> (msgs, detailed)."""
     uid = str(uid or DEFAULT_UID)
     try:
         data = fetch_showcase(uid)
         ctx = showcase_text or showcase_summary(data)
+        detailed = bool(data.get("avatarInfoList"))
     except Exception as ex:
+        data, detailed = None, False
         ctx = f"Enka inaccessible pour UID {uid} : {ex}. Conseiller en générique + vérifier UID/vitrine."
-    news = maybe_news_context(question)
+    fact = maybe_fact_context(question)
     msgs = [{"role": "system", "content": SYSTEM + "\n\nCompte joueur (Enka) :\n" + ctx[:4000]}]
-    if news:
-        msgs.append({"role": "system", "content": "Infos fraîches du web :\n" + news[:2000]})
+    if fact:
+        msgs.append({"role": "system",
+                     "content": "Infos fact-check (web + Fandom, à respecter) :\n" + fact[:2000]})
     for m in (history or [])[-8:]:
         if m.get("role") in ("user", "assistant") and m.get("content"):
             msgs.append({"role": m["role"], "content": m["content"][:2000]})
     msgs.append({"role": "user", "content": question})
+    return msgs, detailed, ctx
+
+
+def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
+    uid = str(uid or DEFAULT_UID)
+    msgs, _, ctx = build_messages(question, uid=uid, history=history, showcase_text=showcase_text)
     try:
         answer, model = llm_complete(msgs, session_key=session_key or uid)
         return {"answer": answer, "model": model, "llm": True}
