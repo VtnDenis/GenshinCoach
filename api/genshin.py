@@ -464,6 +464,22 @@ def _extract_delta(evt):
     return ""
 
 
+def _responses_usage(d):
+    """Tokens réellement consommés (pour le tok/s affiché)."""
+    try:
+        u = (d.get("response") or {}).get("usage") or d.get("usage") or {}
+        out = int(u.get("output_tokens") or 0)
+        inp = int(u.get("input_tokens") or 0)
+        return (out or None, inp or None)
+    except (TypeError, ValueError):
+        return (None, None)
+
+
+def _extract_usage(evt):
+    out, _ = _responses_usage(evt) if isinstance(evt, dict) else (None, None)
+    return out
+
+
 def _extract_thinking(evt):
     """Résumé de raisonnement partageable (summary:auto), affichable dans l'UI."""
     if isinstance(evt, dict) and evt.get("type") == "response.reasoning_summary_text.delta" \
@@ -512,8 +528,13 @@ def llm_stream(messages, session_key=""):
         url = base + "/chat/completions"
         data = {"model": model, "stream": True, "messages": messages}
     got = False
+    out_tokens = None
     try:
         for evt in _sse_post(url, data, _llm_headers(session_key)):
+            u = _extract_usage(evt)
+            if u:
+                out_tokens = u
+                continue
             th = _extract_thinking(evt)
             if th:
                 yield ("thinking", th)
@@ -524,12 +545,18 @@ def llm_stream(messages, session_key=""):
                 yield ("answer", t)
     except Exception:
         if got:
+            if out_tokens:
+                yield ("stats", {"out_tokens": out_tokens})
             return  # coupe mid-stream : le partiel est déjà affiché/sauvegardé
+    if out_tokens and got:
+        yield ("stats", {"out_tokens": out_tokens})
     if not got:  # stream vide ou incompatible : un seul bloc (le front gère pareil)
-        answer, _, thinking = llm_complete(messages, session_key=session_key)
+        answer, _, thinking, usage = llm_complete(messages, session_key=session_key)
         if thinking:
             yield ("thinking", thinking)
         yield ("answer", answer)
+        if usage:
+            yield ("stats", {"out_tokens": usage})
 
 
 def llm_complete(messages, session_key=""):
@@ -545,13 +572,14 @@ def llm_complete(messages, session_key=""):
         payload.update(_reasoning_arg())
         d = _http_json(base + "/responses", method="POST", timeout=180,
                        headers=_llm_headers(session_key), data=payload)
-        return _responses_text(d), model, _responses_summary(d)
+        out, _ = _responses_usage(d)
+        return _responses_text(d), model, _responses_summary(d), out
     d = _http_json(base + "/chat/completions", method="POST", timeout=120,
                    headers=_llm_headers(session_key),
                    data={"model": model, "stream": False, "messages": messages})
     think = _responses_summary(d) if isinstance(d, dict) else ""
     try:
-        return d["choices"][0]["message"]["content"], d.get("model", model), think
+        return d["choices"][0]["message"]["content"], d.get("model", model), think, None
     except (KeyError, IndexError, TypeError):
         raise RuntimeError(f"Réponse LLM inattendue : {str(d)[:200]}")
 
@@ -620,11 +648,17 @@ def build_messages(question, uid=None, history=None, showcase_text=None):
 
 def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
     uid = str(uid or DEFAULT_UID)
+    t_all = time.time()
     msgs, _, ctx = build_messages(question, uid=uid, history=history, showcase_text=showcase_text)
+    t0 = time.time()
     try:
-        answer, model, thinking = llm_complete(msgs, session_key=session_key or uid)
-        return {"answer": answer, "model": model, "thinking": thinking, "llm": True}
+        answer, model, thinking, usage = llm_complete(msgs, session_key=session_key or uid)
+        return {"answer": answer, "model": model, "thinking": thinking,
+                "stats": {"total_s": round(time.time() - t_all, 1),
+                          "llm_s": round(time.time() - t0, 1), "out": usage}, "llm": True}
     except Exception as ex:
         fall = ("Le LLM est injoignable (%s). En attendant, voici l'audit de ta vitrine :\n\n%s"
                 % (ex, ctx[:3000]))
-        return {"answer": fall, "model": "audit-only", "thinking": "", "llm": False}
+        return {"answer": fall, "model": "audit-only", "thinking": "",
+                "stats": {"total_s": round(time.time() - t_all, 1),
+                          "llm_s": None, "out": None}, "llm": False}

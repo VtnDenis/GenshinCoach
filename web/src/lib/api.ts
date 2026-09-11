@@ -11,6 +11,8 @@ export interface StoredMsg {
 	created_at: number;
 	thinking?: string | null;
 	secs?: number | null;
+	answer_secs?: number | null;
+	out_tokens?: number | null;
 }
 
 export interface Step {
@@ -20,13 +22,27 @@ export interface Step {
 	error?: string;
 }
 
+export interface MsgStats {
+	totalS?: number | null;
+	toks?: number | null;
+	out?: number | null;
+}
+
 export interface Msg {
 	role: 'user' | 'assistant';
 	text: string;
 	model?: string | null;
 	thinking?: string | null;
 	thinkSecs?: number | null;
+	stats?: MsgStats | null;
 }
+
+export const fmtDur = (s: number | null | undefined): string | null => {
+	if (s == null || !isFinite(s) || s < 0) return null;
+	if (s < 60) return `${Math.round(s)}s`;
+	const m = Math.floor(s / 60);
+	return `${m}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
+};
 
 export interface ShowcaseChar {
 	id: string;
@@ -127,6 +143,7 @@ export const sendChat = (question: string, uid: string, session_id: string | nul
 			answer: string;
 			model: string;
 			thinking: string;
+			stats: { total_s: number | null; toks: number | null; out: number | null };
 			session_id: string;
 			detailed: boolean;
 		}>
@@ -142,6 +159,7 @@ export const sendChatStream = async (
 	answer: string;
 	thinking: string;
 	thinkSecs: number | null;
+	stats: MsgStats;
 	model: string;
 	session_id: string;
 	detailed: boolean;
@@ -158,6 +176,7 @@ export const sendChatStream = async (
 	let full = '';
 	let thinking = '';
 	let thinkSecs: number | null = null;
+	const stats: MsgStats = {};
 	let sid = session_id ?? '';
 	let model = '';
 	let detailed = false;
@@ -195,13 +214,19 @@ export const sendChatStream = async (
 					detailed = d['detailed'] === true;
 					if (typeof d['thinking'] === 'string' && d['thinking']) thinking = d['thinking'] as string;
 					if (typeof d['think_secs'] === 'number') thinkSecs = d['think_secs'] as number;
+					const st = d['stats'] as Record<string, unknown> | undefined;
+					if (st) {
+						if (typeof st['total_s'] === 'number') stats.totalS = st['total_s'] as number;
+						if (typeof st['toks'] === 'number') stats.toks = st['toks'] as number;
+						if (typeof st['out'] === 'number') stats.out = st['out'] as number;
+					}
 				} else if (typeof ev['error'] === 'string') {
 					throw new Error(ev['error'] as string);
 				}
 			}
 		}
 	}
-	return { answer: full, thinking, thinkSecs, model, session_id: sid, detailed };
+	return { answer: full, thinking, thinkSecs, stats, model, session_id: sid, detailed };
 };
 
 export const listSessions = (n = 20) =>

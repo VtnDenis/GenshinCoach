@@ -60,6 +60,13 @@ def _db_error(ex):
     return s[:300]
 
 
+def _toks(out, secs):
+    try:
+        return round(out / secs, 1) if out and secs else None
+    except (TypeError, ZeroDivisionError):
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "GenshinCoach/1.0"
 
@@ -136,10 +143,12 @@ class Handler(BaseHTTPRequestHandler):
                     traceback.print_exc()
                     return _json(self, {"error": _db_error(ex)}, 500)
                 r = genshin.ask(q, uid=uid, history=hist, session_key=sid)
+                st = r.get("stats") or {}
                 try:
                     store.add_message(sid, "user", q)
                     amid = store.add_message(sid, "assistant", r["answer"])
-                    store.save_thinking(amid, r.get("thinking") or "")
+                    store.save_thinking(amid, r.get("thinking") or "",
+                                        None, st.get("llm_s"), st.get("out"))
                     if not (sess or {}).get("title"):
                         store.set_title(sid, q)
                 except Exception as ex:
@@ -152,6 +161,9 @@ class Handler(BaseHTTPRequestHandler):
                     det = False
                 return _json(self, {"answer": r["answer"], "model": r["model"],
                                     "thinking": r.get("thinking") or "",
+                                    "stats": {"total_s": st.get("total_s"),
+                                              "toks": _toks(st.get("out"), st.get("llm_s")),
+                                              "out": st.get("out")},
                                     "session_id": sid, "detailed": det})
             if path == "/api/chat/stream":
                 b = _body(self)
@@ -191,8 +203,16 @@ class Handler(BaseHTTPRequestHandler):
                 full, think_parts = [], []
                 t_start = time.time()
                 think_secs = None
+                t_first_ans = None
+                out_tokens = None
                 try:
                     for kind, tok in genshin.llm_stream(msgs, session_key=sid):
+                        if kind == "stats":
+                            try:
+                                out_tokens = int((tok or {}).get("out_tokens") or 0) or None
+                            except (TypeError, ValueError):
+                                out_tokens = None
+                            continue
                         if kind == "thinking":
                             think_parts.append(tok)
                             try:
@@ -202,6 +222,7 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         if think_secs is None:
                             think_secs = round(time.time() - t_start, 1)
+                            t_first_ans = time.time()
                         full.append(tok)
                         try:
                             emit({"delta": tok})
@@ -215,8 +236,12 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 answer = "".join(full)
                 thinking = "".join(think_parts)
+                t_end = time.time()
                 if think_secs is None:
-                    think_secs = round(time.time() - t_start, 1)
+                    think_secs = round(t_end - t_start, 1)
+                answer_secs = round(t_end - t_first_ans, 1) if t_first_ans else None
+                total_s = round(t_end - t_start, 1)
+                toks = _toks(out_tokens, answer_secs)
                 try:
                     try:
                         data = genshin.fetch_showcase(uid)
@@ -226,11 +251,13 @@ class Handler(BaseHTTPRequestHandler):
                     if answer:
                         store.add_message(sid, "user", q)
                         amid = store.add_message(sid, "assistant", answer)
-                        store.save_thinking(amid, thinking, think_secs)
+                        store.save_thinking(amid, thinking, think_secs, answer_secs, out_tokens)
                         if not (sess or {}).get("title"):
                             store.set_title(sid, q)
                     emit({"done": {"session_id": sid, "model": model, "detailed": det,
-                                   "thinking": thinking, "think_secs": think_secs}})
+                                   "thinking": thinking, "think_secs": think_secs,
+                                   "stats": {"total_s": total_s, "toks": toks,
+                                             "out": out_tokens}}})
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 except Exception as ex:

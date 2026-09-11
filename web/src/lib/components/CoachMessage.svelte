@@ -1,11 +1,20 @@
 <script lang="ts">
-	import { renderMd, type Step } from '$lib/api';
+	import { fmtDur, renderMd, type MsgStats, type Step } from '$lib/api';
 	import 'katex/dist/katex.min.css';
 	import '$lib/md.css';
 	import Thinking from './Thinking.svelte';
 
-	let { text, model = null, steps = [], onRetry = null, retrying = false }: { text: string; model?: string | null; steps?: Step[]; onRetry?: (() => void) | null; retrying?: boolean } = $props();
+	let { text, model = null, steps = [], stats = null, onRetry = null, retrying = false }: { text: string; model?: string | null; steps?: Step[]; stats?: MsgStats | null; onRetry?: (() => void) | null; retrying?: boolean } = $props();
 	let copied = $state(false);
+
+	let footer = $derived.by(() => {
+		const parts: string[] = [];
+		if (model) parts.push(`via ${model}`);
+		const dur = fmtDur(stats?.totalS);
+		if (dur) parts.push(dur);
+		if (stats?.toks != null && isFinite(stats.toks)) parts.push(`${stats.toks.toFixed(1)} tok/s`);
+		return parts.join(' · ') || null;
+	});
 
 	let stepRows = $derived(
 		(steps ?? []).map((s) => ({
@@ -94,8 +103,8 @@
 				{retrying ? 'Retry…' : 'Réessayer'}
 			</button>
 		{/if}
-		{#if model}
-			<span class="ml-auto text-[11px] text-ink-3">via {model}</span>
+		{#if footer}
+			<span class="ml-auto text-[11px] text-ink-3 tabular-nums">{footer}</span>
 		{/if}
 	</div>
 </div>

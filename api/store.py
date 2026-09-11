@@ -111,13 +111,30 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS genshin_messages(
       id TEXT PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, created_at REAL)""",
     """CREATE TABLE IF NOT EXISTS genshin_thinking(
-      message_id TEXT PRIMARY KEY, thinking TEXT, secs REAL)""",
+      message_id TEXT PRIMARY KEY, thinking TEXT, secs REAL,
+      answer_secs REAL, out_tokens INTEGER)""",
 ]
+
+
+def _columns(table):
+    try:
+        rows = _q(f"PRAGMA table_info({table})", fetch="all")
+        return {r["name"] for r in rows or []}
+    except Exception:
+        return set()
 
 
 def init_db():
     for sql in SCHEMA:
         _q(sql)
+    # migration BDD existantes (créées avant les colonnes stats)
+    cols = _columns("genshin_thinking")
+    for col, typ in (("answer_secs", "REAL"), ("out_tokens", "INTEGER")):
+        if col not in cols:
+            try:
+                _q(f"ALTER TABLE genshin_thinking ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
 
 
 def new_session(uid, title=""):
@@ -168,7 +185,8 @@ def list_sessions(limit=20):
 
 def get_messages(sid):
     rows = _q_resilient(
-        "SELECT m.role,m.content,m.created_at,t.thinking,t.secs FROM genshin_messages m "
+        "SELECT m.role,m.content,m.created_at,t.thinking,t.secs,t.answer_secs,t.out_tokens "
+        "FROM genshin_messages m "
         "LEFT JOIN genshin_thinking t ON t.message_id=m.id WHERE m.session_id=? "
         "ORDER BY m.created_at ASC LIMIT 200", (sid,), fetch="all")
     return rows or []
@@ -182,12 +200,13 @@ def add_message(sid, role, content):
     return mid
 
 
-def save_thinking(mid, thinking, secs=None):
-    if not thinking:
+def save_thinking(mid, thinking, secs=None, answer_secs=None, out_tokens=None):
+    if not thinking and answer_secs is None and out_tokens is None:
         return
     try:
-        _q_resilient("INSERT OR REPLACE INTO genshin_thinking(message_id,thinking,secs) VALUES(?,?,?)",
-                     (mid, thinking[:4000], secs))
+        _q_resilient("INSERT OR REPLACE INTO genshin_thinking"
+                     "(message_id,thinking,secs,answer_secs,out_tokens) VALUES(?,?,?,?,?)",
+                     (mid, (thinking or "")[:4000], secs, answer_secs, out_tokens))
     except Exception:
         pass
 

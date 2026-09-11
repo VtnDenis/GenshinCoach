@@ -13,6 +13,7 @@
 		setSid,
 		renderMd,
 		type Msg,
+		type MsgStats,
 		type Session,
 		type Showcase,
 		type ShowcaseChar
@@ -173,12 +174,24 @@
 		notFound = false;
 		try {
 			const r = await getMessages(id);
-			msgs = r.messages.map((m) => ({
-				role: m.role === 'user' ? 'user' : 'assistant',
-				text: m.content,
-				thinking: m.thinking ?? null,
-				thinkSecs: m.secs ?? null
-			}));
+			msgs = r.messages.map((m) => {
+				const out = m.out_tokens ?? null;
+				const asec = m.answer_secs ?? null;
+				return {
+					role: m.role === 'user' ? 'user' : 'assistant',
+					text: m.content,
+					thinking: m.thinking ?? null,
+					thinkSecs: m.secs ?? null,
+					stats:
+						out != null || asec != null
+							? {
+									totalS: asec,
+									toks: out != null && asec ? Math.round((out / asec) * 10) / 10 : null,
+									out
+								}
+							: null
+				};
+			});
 			sid = id;
 			setSid(id);
 			syncUrl(replace);
@@ -242,7 +255,8 @@
 			text: string,
 			model?: string | null,
 			thinking?: string | null,
-			thinkSecs?: number | null
+			thinkSecs?: number | null,
+			stats?: MsgStats | null
 		) => {
 			if (!text.trim()) text = 'Erreur : réponse vide du coach, réessaie.';
 			msgs = msgs.map((m, i) =>
@@ -252,7 +266,8 @@
 							text,
 							model: model ?? m.model,
 							thinking: thinking ?? m.thinking ?? null,
-							thinkSecs: thinkSecs ?? m.thinkSecs ?? null
+							thinkSecs: thinkSecs ?? m.thinkSecs ?? null,
+							stats: stats ?? m.stats ?? null
 						}
 					: m
 			);
@@ -262,13 +277,17 @@
 				const r = await sendChatStream(q, uid, sid, paint, paintThinking);
 				sid = r.session_id;
 				setSid(sid);
-				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs);
+				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs, r.stats);
 			} catch (e) {
 				if (streamed) throw e; // partiel déjà affiché : on ajoute l'erreur dessous
 				const r = await sendChat(q, uid, sid); // repli batch
 				sid = r.session_id;
 				setSid(sid);
-				finish(r.answer, r.model, r.thinking || null, null);
+				finish(r.answer, r.model, r.thinking || null, null, {
+					totalS: r.stats.total_s,
+					toks: r.stats.toks,
+					out: r.stats.out
+				});
 			}
 			syncUrl(true);
 			refreshSessions();
@@ -547,6 +566,7 @@
 										<CoachMessage
 											text={m.text || 'Erreur : réponse vide du coach, réessaie.'}
 											model={m.model}
+											stats={m.stats ?? null}
 										/>
 									{/if}
 								</div>
