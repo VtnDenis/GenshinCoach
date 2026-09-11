@@ -463,6 +463,15 @@ def _extract_delta(evt):
     return ""
 
 
+def _reasoning_arg():
+    """Effort de raisonnement (Responses API) : OMNIROUTE_REASONING_EFFORT=minimal|low|medium|high|xhigh.
+    Défaut 'low' : TTFT bien plus court, qualité suffisante pour du coaching court."""
+    v = (E("OMNIROUTE_REASONING_EFFORT", "low") or "").strip().lower()
+    if v in ("minimal", "low", "medium", "high", "xhigh"):
+        return {"reasoning": {"effort": v}}
+    return {}
+
+
 def llm_stream(messages, session_key=""):
     """Yield les bouts de réponse au fil de l'eau. Repli batch si le stream échoue."""
     base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
@@ -475,6 +484,7 @@ def llm_stream(messages, session_key=""):
         data = {"model": model_id, "stream": True,
                 "input": [{"role": m["role"], "content": m["content"]}
                           for m in messages if m.get("role") in ("system", "user", "assistant")]}
+        data.update(_reasoning_arg())
     else:
         url = base + "/chat/completions"
         data = {"model": model, "stream": True, "messages": messages}
@@ -500,11 +510,12 @@ def llm_complete(messages, session_key=""):
         raise RuntimeError("OMNIROUTE_BASE_URL manquant")
     if "zen/go" in base:
         model_id = model.split("/", 1)[-1]  # opencode-go/x -> x
+        payload = {"model": model_id, "stream": False,
+                   "input": [{"role": m["role"], "content": m["content"]}
+                             for m in messages if m.get("role") in ("system", "user", "assistant")]}
+        payload.update(_reasoning_arg())
         d = _http_json(base + "/responses", method="POST", timeout=180,
-                       headers=_llm_headers(session_key),
-                       data={"model": model_id, "stream": False,
-                             "input": [{"role": m["role"], "content": m["content"]}
-                                       for m in messages if m.get("role") in ("system", "user", "assistant")]})
+                       headers=_llm_headers(session_key), data=payload)
         return _responses_text(d), model
     d = _http_json(base + "/chat/completions", method="POST", timeout=120,
                    headers=_llm_headers(session_key),
