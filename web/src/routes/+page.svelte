@@ -182,6 +182,7 @@
 					text: m.content,
 					thinking: m.thinking ?? null,
 					thinkSecs: m.secs ?? null,
+					steps: null,
 					stats:
 						out != null || asec != null
 							? {
@@ -251,12 +252,19 @@
 			streamedThinking += t;
 			msgs = msgs.map((m, i) => (i === idx ? { ...m, thinking: streamedThinking } : m));
 		};
+		let streamedSteps: import('$lib/api').Step[] = [];
+		const paintStep = (st: import('$lib/api').Step) => {
+			streamedSteps = [...streamedSteps, st];
+			msgs = msgs.map((m, i) => (i === idx ? { ...m, steps: streamedSteps } : m));
+			scrollBottom();
+		};
 		const finish = (
 			text: string,
 			model?: string | null,
 			thinking?: string | null,
 			thinkSecs?: number | null,
-			stats?: MsgStats | null
+			stats?: MsgStats | null,
+			steps?: import('$lib/api').Step[] | null
 		) => {
 			if (!text.trim()) text = 'Erreur : réponse vide du coach, réessaie.';
 			msgs = msgs.map((m, i) =>
@@ -267,17 +275,18 @@
 							model: model ?? m.model,
 							thinking: thinking ?? m.thinking ?? null,
 							thinkSecs: thinkSecs ?? m.thinkSecs ?? null,
-							stats: stats ?? m.stats ?? null
+							stats: stats ?? m.stats ?? null,
+							steps: steps ?? m.steps ?? null
 						}
 					: m
 			);
 		};
 		try {
 			try {
-				const r = await sendChatStream(q, uid, sid, paint, paintThinking);
+				const r = await sendChatStream(q, uid, sid, paint, paintThinking, paintStep);
 				sid = r.session_id;
 				setSid(sid);
-				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs, r.stats);
+				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs, r.stats, r.steps?.length ? r.steps : streamedSteps);
 			} catch (e) {
 				if (streamed) throw e; // partiel déjà affiché : on ajoute l'erreur dessous
 				const r = await sendChat(q, uid, sid); // repli batch
@@ -287,7 +296,7 @@
 					totalS: r.stats.total_s,
 					toks: r.stats.toks,
 					out: r.stats.out
-				});
+				}, (r as unknown as { steps?: import('$lib/api').Step[] }).steps ?? streamedSteps);
 			}
 			syncUrl(true);
 			refreshSessions();
@@ -566,6 +575,7 @@
 										<CoachMessage
 											text={m.text || 'Erreur : réponse vide du coach, réessaie.'}
 											model={m.model}
+											steps={m.steps ?? []}
 											stats={m.stats ?? null}
 										/>
 									{/if}
@@ -576,7 +586,7 @@
 					{#if busy && !streaming}
 						<div use:rise class="w-full">
 							<div class="rounded-card border border-line bg-surface px-4 py-3">
-								<Thinking rows={[]} working={true} activeLabel="Analyse de ta vitrine…" />
+								<Thinking rows={[]} working={true} activeLabel="L'agent choisit ses outils…" />
 								<div class="mt-2 border-t border-line pt-2.5">
 									<LoadingState label="Coach" />
 								</div>

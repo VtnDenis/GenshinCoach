@@ -35,6 +35,7 @@ export interface Msg {
 	thinking?: string | null;
 	thinkSecs?: number | null;
 	stats?: MsgStats | null;
+	steps?: Step[] | null;
 }
 
 export const fmtDur = (s: number | null | undefined): string | null => {
@@ -143,6 +144,7 @@ export const sendChat = (question: string, uid: string, session_id: string | nul
 			answer: string;
 			model: string;
 			thinking: string;
+			steps?: Step[];
 			stats: { total_s: number | null; toks: number | null; out: number | null };
 			session_id: string;
 			detailed: boolean;
@@ -154,7 +156,8 @@ export const sendChatStream = async (
 	uid: string,
 	session_id: string | null,
 	onToken: (t: string) => void,
-	onThinking?: (t: string) => void
+	onThinking?: (t: string) => void,
+	onStep?: (s: Step) => void
 ): Promise<{
 	answer: string;
 	thinking: string;
@@ -163,6 +166,7 @@ export const sendChatStream = async (
 	model: string;
 	session_id: string;
 	detailed: boolean;
+	steps: Step[];
 }> => {
 	const r = await fetch('/api/chat/stream', {
 		method: 'POST',
@@ -180,6 +184,7 @@ export const sendChatStream = async (
 	let sid = session_id ?? '';
 	let model = '';
 	let detailed = false;
+	const steps: Step[] = [];
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
@@ -207,11 +212,28 @@ export const sendChatStream = async (
 					onThinking?.(ev['thinking'] as string);
 				} else if (ev['meta'] && typeof (ev['meta'] as Record<string, unknown>)['session_id'] === 'string') {
 					sid = (ev['meta'] as Record<string, unknown>)['session_id'] as string;
+				} else if (ev['step'] && typeof ev['step'] === 'object') {
+					const s = ev['step'] as Step;
+					steps.push(s);
+					onStep?.(s);
+				} else if (ev['tool'] && typeof ev['tool'] === 'object') {
+					const s = ev['tool'] as Step;
+					steps.push(s);
+					onStep?.(s);
 				} else if (ev['done']) {
 					const d = ev['done'] as Record<string, unknown>;
 					if (typeof d['session_id'] === 'string') sid = d['session_id'] as string;
 					if (typeof d['model'] === 'string') model = d['model'] as string;
 					detailed = d['detailed'] === true;
+					if (Array.isArray(d['steps'])) {
+						for (const s of d['steps'] as Step[]) {
+							if (s && typeof s === 'object' && typeof (s as Step).tool === 'string') {
+								if (!steps.some((x) => x.tool === (s as Step).tool && x.ms === (s as Step).ms)) {
+									steps.push(s as Step);
+								}
+							}
+						}
+					}
 					if (typeof d['thinking'] === 'string' && d['thinking']) thinking = d['thinking'] as string;
 					if (typeof d['think_secs'] === 'number') thinkSecs = d['think_secs'] as number;
 					const st = d['stats'] as Record<string, unknown> | undefined;
@@ -226,7 +248,7 @@ export const sendChatStream = async (
 			}
 		}
 	}
-	return { answer: full, thinking, thinkSecs, stats, model, session_id: sid, detailed };
+	return { answer: full, thinking, thinkSecs, stats, model, session_id: sid, detailed, steps };
 };
 
 export const listSessions = (n = 20) =>

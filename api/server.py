@@ -155,12 +155,18 @@ class Handler(BaseHTTPRequestHandler):
                     traceback.print_exc()
                     return _json(self, {"error": _db_error(ex)}, 500)
                 try:
-                    data = genshin.fetch_showcase(uid)
-                    det = bool(data.get("avatarInfoList"))
+                    det = r.get("detailed")
+                    if det is None:
+                        try:
+                            data = genshin.fetch_showcase(uid)
+                            det = bool(data.get("avatarInfoList"))
+                        except Exception:
+                            det = False
                 except Exception:
                     det = False
                 return _json(self, {"answer": r["answer"], "model": r["model"],
                                     "thinking": r.get("thinking") or "",
+                                    "steps": r.get("steps") or [],
                                     "stats": {"total_s": st.get("total_s"),
                                               "toks": _toks(st.get("out"), st.get("llm_s")),
                                               "out": st.get("out")},
@@ -197,37 +203,59 @@ class Handler(BaseHTTPRequestHandler):
                     emit({"meta": {"session_id": sid}})
                 except (BrokenPipeError, ConnectionResetError):
                     return
-                # Pré-travail lent (Enka + fact-check) APRÈS le premier event :
-                # le front affiche "Coach écrit…" au lieu d'attendre dans le vide.
-                msgs, _, _ = genshin.build_messages(q, uid=uid, history=hist)
+                # Boucle agent (logique RunCoach) APRÈS le premier event :
+                # steps + thinking en live, seule la réponse finale est affichée.
                 full, think_parts = [], []
+                steps_all = []
+                done_detailed = None
+                done_model = None
                 t_start = time.time()
                 think_secs = None
                 t_first_ans = None
                 out_tokens = None
                 try:
-                    for kind, tok in genshin.llm_stream(msgs, session_key=sid):
-                        if kind == "stats":
+                    for ev in genshin.ask_stream(q, uid=uid, history=hist, session_key=sid):
+                        et = ev.get("type")
+                        if et == "thinking":
+                            d = ev.get("delta") or ""
+                            if d:
+                                think_parts.append(d)
+                                try:
+                                    emit({"thinking": d})
+                                except (BrokenPipeError, ConnectionResetError):
+                                    break
+                        elif et == "step_end":
+                            st = {"tool": ev.get("tool"), "ms": ev.get("ms"),
+                                  "result": (ev.get("result") or "")[:300],
+                                  "error": ev.get("error") or ""}
+                            steps_all.append(st)
                             try:
-                                out_tokens = int((tok or {}).get("out_tokens") or 0) or None
-                            except (TypeError, ValueError):
-                                out_tokens = None
-                            continue
-                        if kind == "thinking":
-                            think_parts.append(tok)
-                            try:
-                                emit({"thinking": tok})
+                                emit({"step": st})
                             except (BrokenPipeError, ConnectionResetError):
                                 break
-                            continue
-                        if think_secs is None:
-                            think_secs = round(time.time() - t_start, 1)
-                            t_first_ans = time.time()
-                        full.append(tok)
-                        try:
-                            emit({"delta": tok})
-                        except (BrokenPipeError, ConnectionResetError):
+                        elif et == "token":
+                            d = ev.get("delta") or ""
+                            if think_secs is None:
+                                think_secs = round(time.time() - t_start, 1)
+                                t_first_ans = time.time()
+                            full.append(d)
+                            try:
+                                emit({"delta": d})
+                            except (BrokenPipeError, ConnectionResetError):
+                                break
+                        elif et == "done":
+                            full = [ev.get("answer") or "".join(full)]
+                            done_detailed = ev.get("detailed")
+                            done_model = ev.get("model") or None
+                            if ev.get("steps"):
+                                steps_all = ev["steps"]
+                            think_parts = [ev.get("thinking") or "".join(think_parts)]
                             break
+                        elif et == "error":
+                            raise RuntimeError(ev.get("error") or "erreur agent")
+                        # step_start ignoré : step_end porte la trace complète
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 except Exception as ex:
                     traceback.print_exc()
                     try:
@@ -235,6 +263,8 @@ class Handler(BaseHTTPRequestHandler):
                     except (BrokenPipeError, ConnectionResetError):
                         pass
                 answer = "".join(full)
+                if done_model:
+                    model = done_model
                 thinking = "".join(think_parts)
                 t_end = time.time()
                 if think_secs is None:
@@ -244,8 +274,10 @@ class Handler(BaseHTTPRequestHandler):
                 toks = _toks(out_tokens, answer_secs)
                 try:
                     try:
-                        data = genshin.fetch_showcase(uid)
-                        det = bool(data.get("avatarInfoList"))
+                        det = done_detailed
+                        if det is None:
+                            data = genshin.fetch_showcase(uid)
+                            det = bool(data.get("avatarInfoList"))
                     except Exception:
                         det = False
                     if answer:
@@ -256,6 +288,7 @@ class Handler(BaseHTTPRequestHandler):
                             store.set_title(sid, q)
                     emit({"done": {"session_id": sid, "model": model, "detailed": det,
                                    "thinking": thinking, "think_secs": think_secs,
+                                   "steps": steps_all,
                                    "stats": {"total_s": total_s, "toks": toks,
                                              "out": out_tokens}}})
                 except (BrokenPipeError, ConnectionResetError):

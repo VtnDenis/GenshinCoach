@@ -2,7 +2,6 @@
 import json
 import os
 import re
-import threading
 import time
 import urllib.parse
 import urllib.request
@@ -283,6 +282,8 @@ def showcase_summary(data):
 
 # ---------- Tavily (news / patch, gratuit tiers) ----------
 
+# ---------- Tavily (news) + Fandom (wiki, sans clé) ----------
+
 def tavily_search(query, k=5):
     key = E("TAVILY_API_KEY", "")
     if not key:
@@ -297,24 +298,6 @@ def tavily_search(query, k=5):
             "snippet": (r.get("content", "") or "")[:400]}
            for r in d.get("results", [])]
     return {"answer": d.get("answer", ""), "results": res}
-
-
-NEWS_RE = re.compile(r"patch|banni[eè]re|banner|maj|mise [aà] jour|version \d|abyss|abysse|"
-                     r"[eé]v[eé]nement|event|code|redeem|tier.?list|nouveau perso|rerun|hoyolab",
-                     re.IGNORECASE)
-
-
-def maybe_news_context(question):
-    if not NEWS_RE.search(question or ""):
-        return ""
-    r = tavily_search(f"Genshin Impact {question} patch notes Hoyolab", k=5)
-    parts = []
-    if r["answer"]:
-        parts.append("Résumé web : " + r["answer"][:800])
-    for x in r["results"][:4]:
-        parts.append(f"- {x['title']} ({x['url']}) : {x['snippet'][:250]}")
-    return "\n".join(parts)
-
 
 def fandom_search(query, k=3):
     """Liens canoniques Fandom (sans clé, toujours dispo)."""
@@ -331,44 +314,6 @@ def fandom_search(query, k=3):
         return out
     except Exception:
         return []
-
-
-ADVICE_RE = re.compile(r"build|arme|artefact|artéfact|team|[eé]quipe|rotation|talent|"
-                       r"constellation|monter|priorit[ée]|conseil|recommand|pull|reroll|tier|"
-                       r"donjon|abysse|abyss|boss|farm|stat\b|stats|d[eé]g[aâ]ts|crit|recharge",
-                       re.IGNORECASE)
-
-
-def maybe_fact_context(question):
-    """Contexte web pour fact-check des conseils : Tavily (si clé) + Fandom (toujours)."""
-    q = question or ""
-    parts = []
-    news = maybe_news_context(q)
-    if news:
-        parts.append(news)
-    if ADVICE_RE.search(q):
-        box = {}
-        t1 = threading.Thread(target=lambda: box.update(
-            tavily=[tavily_search(f"Genshin Impact {q} build guide", k=5)]), daemon=True)
-        t2 = threading.Thread(target=lambda: box.update(
-            fandom=fandom_search(f"Genshin Impact {q}", k=3)), daemon=True)
-        t1.start()
-        t2.start()
-        t1.join(12)
-        t2.join(12)
-        r = (box.get("tavily") or [{"answer": "", "results": []}])[0]
-        if r["answer"]:
-            parts.append("Vérif web : " + r["answer"][:800])
-        for x in r["results"][:3]:
-            parts.append(f"- {x['title']} ({x['url']}) : {x['snippet'][:250]}")
-        for x in box.get("fandom") or []:
-            parts.append(f"- Wiki Fandom : {x['title']} ({x['url']}) — à vérifier avant de conseiller.")
-        if not r["answer"] and not r["results"]:
-            for x in fandom_search(q, k=3):
-                if x not in parts:
-                    parts.append(f"- Wiki Fandom : {x['title']} ({x['url']})")
-    return "\n".join(parts)
-
 
 # ---------- LLM (OmniRoute dev / zen prod, cf. RunCoach coach.py:307) ----------
 
@@ -392,17 +337,6 @@ def _llm_headers(session_key=""):
             h["Authorization"] = f"Bearer {key}"
         return h
     return {"Authorization": f"Bearer {key}"}
-
-
-def _responses_text(d):
-    if isinstance(d.get("output_text"), str) and d["output_text"]:
-        return d["output_text"]
-    for item in d.get("output") or []:
-        if item.get("type") == "message":
-            for c in item.get("content") or []:
-                if c.get("type") in ("output_text", "text") and c.get("text"):
-                    return c["text"]
-    raise RuntimeError(f"Réponse Go inattendue : {str(d)[:200]}")
 
 
 def _sse_post(url, data, headers, timeout=180):
@@ -442,28 +376,6 @@ def _sse_post(url, data, headers, timeout=180):
             pass
 
 
-def _extract_delta(evt):
-    """Tente d'extraire le bout de réponse d'un event SSE (2 formats supportés)."""
-    if isinstance(evt, str):
-        return evt
-    if not isinstance(evt, dict):
-        return ""
-    if str(evt.get("type", "")).startswith("response.reasoning"):
-        return ""  # résumé de raisonnement : géré par _extract_thinking, pas dans la réponse
-    try:  # OpenAI /chat/completions : choices[0].delta.content
-        ch = (evt.get("choices") or [{}])[0] or {}
-        t = ((ch.get("delta") or {}).get("content")) or ch.get("text")
-        if t:
-            return t
-    except Exception:
-        pass
-    # Responses API : {"type": "response.output_text.delta", "delta": "..."}
-    if evt.get("type") == "response.output_text.delta" \
-            and isinstance(evt.get("delta"), str) and evt["delta"]:
-        return evt["delta"]
-    return ""
-
-
 def _responses_usage(d):
     """Tokens réellement consommés (pour le tok/s affiché)."""
     try:
@@ -473,11 +385,6 @@ def _responses_usage(d):
         return (out or None, inp or None)
     except (TypeError, ValueError):
         return (None, None)
-
-
-def _extract_usage(evt):
-    out, _ = _responses_usage(evt) if isinstance(evt, dict) else (None, None)
-    return out
 
 
 def _extract_thinking(evt):
@@ -502,86 +409,14 @@ def _responses_summary(d):
         return ""
 
 
-def _reasoning_arg():
+def _reasoning_arg(override=None):
     """Effort de raisonnement (Responses API) : OMNIROUTE_REASONING_EFFORT=minimal|low|medium|high|xhigh.
-    Défaut 'xhigh' + résumé partageable (summary:auto) pour afficher le train de pensée dans l'UI."""
-    v = (E("OMNIROUTE_REASONING_EFFORT", "xhigh") or "").strip().lower()
+    Défaut 'xhigh' + résumé partageable (summary:auto) pour afficher le train de pensée dans l'UI.
+    `override` permet au planificateur agent de raisonner en 'minimal' (rapide, pas cher)."""
+    v = ((override or E("OMNIROUTE_REASONING_EFFORT", "xhigh")) or "").strip().lower()
     if v in ("minimal", "low", "medium", "high", "xhigh"):
         return {"reasoning": {"effort": v, "summary": "auto"}}
     return {}
-
-
-def llm_stream(messages, session_key=""):
-    """Yield ("thinking"|"answer", texte) au fil de l'eau. Repli batch si le stream échoue."""
-    base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
-    model = E("OMNIROUTE_MODEL", "auto")
-    if not base:
-        raise RuntimeError("OMNIROUTE_BASE_URL manquant")
-    if "zen/go" in base:
-        url = base + "/responses"
-        model_id = model.split("/", 1)[-1]  # opencode-go/x -> x
-        data = {"model": model_id, "stream": True,
-                "input": [{"role": m["role"], "content": m["content"]}
-                          for m in messages if m.get("role") in ("system", "user", "assistant")]}
-        data.update(_reasoning_arg())
-    else:
-        url = base + "/chat/completions"
-        data = {"model": model, "stream": True, "messages": messages}
-    got = False
-    out_tokens = None
-    try:
-        for evt in _sse_post(url, data, _llm_headers(session_key)):
-            u = _extract_usage(evt)
-            if u:
-                out_tokens = u
-                continue
-            th = _extract_thinking(evt)
-            if th:
-                yield ("thinking", th)
-                continue
-            t = _extract_delta(evt)
-            if t:
-                got = True
-                yield ("answer", t)
-    except Exception:
-        if got:
-            if out_tokens:
-                yield ("stats", {"out_tokens": out_tokens})
-            return  # coupe mid-stream : le partiel est déjà affiché/sauvegardé
-    if out_tokens and got:
-        yield ("stats", {"out_tokens": out_tokens})
-    if not got:  # stream vide ou incompatible : un seul bloc (le front gère pareil)
-        answer, _, thinking, usage = llm_complete(messages, session_key=session_key)
-        if thinking:
-            yield ("thinking", thinking)
-        yield ("answer", answer)
-        if usage:
-            yield ("stats", {"out_tokens": usage})
-
-
-def llm_complete(messages, session_key=""):
-    base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
-    model = E("OMNIROUTE_MODEL", "auto")
-    if not base:
-        raise RuntimeError("OMNIROUTE_BASE_URL manquant")
-    if "zen/go" in base:
-        model_id = model.split("/", 1)[-1]  # opencode-go/x -> x
-        payload = {"model": model_id, "stream": False,
-                   "input": [{"role": m["role"], "content": m["content"]}
-                             for m in messages if m.get("role") in ("system", "user", "assistant")]}
-        payload.update(_reasoning_arg())
-        d = _http_json(base + "/responses", method="POST", timeout=180,
-                       headers=_llm_headers(session_key), data=payload)
-        out, _ = _responses_usage(d)
-        return _responses_text(d), model, _responses_summary(d), out
-    d = _http_json(base + "/chat/completions", method="POST", timeout=120,
-                   headers=_llm_headers(session_key),
-                   data={"model": model, "stream": False, "messages": messages})
-    think = _responses_summary(d) if isinstance(d, dict) else ""
-    try:
-        return d["choices"][0]["message"]["content"], d.get("model", model), think, None
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError(f"Réponse LLM inattendue : {str(d)[:200]}")
 
 
 SYSTEM = ("Tu es un coach Genshin Impact francophone pour un joueur adulte qui débute, "
@@ -590,10 +425,13 @@ SYSTEM = ("Tu es un coach Genshin Impact francophone pour un joueur adulte qui d
           "Règles : phrases courtes, mots courants. Si tu dois employer un terme technique "
           "(par ex. artefacts, recharge d'énergie, taux crit, constellation), donne aussitôt sa définition "
           "simple puis ce qu'il faut faire concrètement en jeu. "
-          "Avant chaque conseil ou recommandation (build, arme, artefact, team, montée), appuie-toi sur "
-          "les infos web et wiki Fandom fournies dans le contexte : ne contredis jamais le wiki, "
-          "ne jamais inventer un perso, une arme ou un set. Si le contexte web est vide, reste sur "
-          "l'audit Enka et dis-le franchement. "
+          "Tu as des outils pour récupérer le vrai compte du joueur (Enka), les fiches persos, "
+          "le web et le wiki : n'appelle que les outils utiles à la question, jamais à l'avance, "
+          "via le mécanisme natif d'appel d'outils. "
+          "Appuie-toi sur leurs résultats, ne contredis jamais le wiki, "
+          "ne jamais inventer un perso, une arme ou un set, et n'affiche jamais de JSON brut "
+          "ni de balises <function>/<parameter> dans ta réponse. Si un résultat d'outil manque "
+          "ou est vide, dis-le franchement et fais au mieux avec le reste, sans inventer. "
           "Cite les vrais chiffres du joueur, priorise une seule action adaptée à son AR/WL. "
           "À AR30, pas de farm d'artefacts 5 étoiles avant l'AR45 : pense niveaux, armes, talents, "
           "statues, histoires et events. Propose des teams seulement avec ses persos, sauf un seul perso "
@@ -606,59 +444,683 @@ SYSTEM = ("Tu es un coach Genshin Impact francophone pour un joueur adulte qui d
           "numérotées, sans tableaux, sans markdown compliqué.")
 
 
-def build_messages(question, uid=None, history=None, showcase_text=None):
-    """Construit les messages LLM (Enka + fact-check + historique). -> (msgs, detailed)."""
+# ---------- Agent autonome (logique RunCoach, tools natifs) ----------
+# muse-spark est /responses-only : tools natifs via function_call.
+# Dev (passerelle OmniRoute locale) reste en /chat/completions avec tools natifs chat.
+# Boucle : 8 iters max, dédupe seen, synthèse forcée, sanitize + leak XML tolérant.
+
+MAX_ITERS = 8
+_TOOL_TRUNC = 3000
+_STEP_PREVIEW = 300
+_ERR_HINTS = ("erreur", "inconnu", "introuvable", "indisponible", "sans résultat")
+
+
+def _sanitize_answer(s):
+    """Strip leaked tool-call XML (<function>, <parameter>) that some models emit as text."""
+    if not s or "<function" not in s.lower() and "<parameter" not in s.lower():
+        return s or ""
+    m = re.search(r"<\s*function\b", s, flags=re.IGNORECASE)
+    if m:
+        return s[:m.start()].strip()
+    return s
+
+
+def _extract_leaked_tool_calls(text):
+    """Tolerant parser for XML-style leaked calls like <function=wiki_search> + <parameter=...>.
+    Returns OpenAI-compatible tool_calls list or []."""
+    if not text or "<function" not in text.lower():
+        return []
+    m = re.search(r"<\s*function\s*=?\s*\"?([a-zA-Z_][a-zA-Z0-9_]*)\b", text, flags=re.IGNORECASE)
+    if not m:
+        return []
+    name = m.group(1)
+    if name not in _TOOL_FNS:
+        return []
+    params = {}
+    for pm in re.finditer(r"<\s*parameter\s*=?\s*\"?([a-zA-Z_][a-zA-Z0-9_]*)[^>]*>(.*?)"
+                          r"(?=<\s*/?\s*(parameter|function)\b|$)",
+                          text, flags=re.IGNORECASE | re.DOTALL):
+        key = pm.group(1)
+        val = pm.group(2) or ""
+        val = re.sub(r"</\s*(parameter|function)\s*>.*", "", val, flags=re.IGNORECASE | re.DOTALL).strip()
+        val = re.split(r"<\s*/?\s*function\b", val, flags=re.IGNORECASE)[0].strip()
+        if key and val:
+            params[key] = val
+    return [{"id": name, "type": "function", "function": {"name": name, "arguments": json.dumps(params)}}]
+
+
+def _tool_get_showcase(uid):
+    data = fetch_showcase(uid)
+    txt = showcase_summary(data)
+    return txt[:2500], bool(data.get("avatarInfoList"))
+
+
+def _tool_get_character(name):
+    jmp_id = (name or "").strip().lower().replace(" ", "-")
+    d = jmp_detail(jmp_id) if jmp_id else {}
+    if not d:
+        return f"Fiche perso introuvable pour '{name}'. Essaie wiki_search('{name}').", False
+    bits = [f"{k} : {v}" for k, v in d.items() if v]
+    return (f"Fiche {d.get('name', name)} — " + " | ".join(bits))[:_TOOL_TRUNC], False
+
+
+def _tool_web_search(query):
+    r = tavily_search(f"Genshin Impact {query}", k=5)
+    parts = []
+    if r.get("answer"):
+        parts.append("Résumé web : " + r["answer"][:800])
+    for x in (r.get("results") or [])[:3]:
+        parts.append(f"- {x.get('title', '')} ({x.get('url', '')}) : {(x.get('snippet', '') or '')[:250]}")
+    if not parts:
+        return "Recherche web sans résultat (clé manquante ou aucun résultat).", False
+    return "\n".join(parts)[:_TOOL_TRUNC], False
+
+
+def _tool_wiki_search(query):
+    res = fandom_search(query, k=3)
+    if not res:
+        return f"Wiki Fandom sans résultat pour '{query}'.", False
+    return "\n".join(f"- Wiki Fandom : {x['title']} ({x['url']})" for x in res)[:_TOOL_TRUNC], False
+
+
+def _t_showcase(_uid=None):
+    txt, _ = _tool_get_showcase(_uid)
+    return txt
+
+
+def _t_character(name=""):
+    txt, _ = _tool_get_character(name)
+    return txt
+
+
+def _t_web(query=""):
+    txt, _ = _tool_web_search(query)
+    return txt
+
+
+def _t_wiki(query=""):
+    txt, _ = _tool_wiki_search(query)
+    return txt
+
+
+_TOOL_FNS = {
+    "get_showcase": _t_showcase,
+    "get_character": _t_character,
+    "web_search": _t_web,
+    "wiki_search": _t_wiki,
+}
+
+
+def _run_tool(name, args, uid=None):
+    try:
+        fn = _TOOL_FNS[name]
+    except KeyError:
+        return f"outil inconnu: {name}"
+    try:
+        a2 = dict(args or {})
+        if name == "get_showcase":
+            a2["_uid"] = uid
+        return str(fn(**a2))[:_TOOL_TRUNC] or "vide"
+    except Exception as e:
+        return f"outil {name} erreur: {e}"
+
+
+def _tool_specs():
+    return [
+        {"type": "function", "function": {
+            "name": "get_showcase",
+            "description": "Compte Enka du joueur (niveaux, armes, artefacts, audit). UID déjà connu, aucun argument. Appelle-le pour personnaliser avec l'AR ou répondre compte/build/team/prio.",
+            "parameters": {"type": "object", "properties": {}}}},
+        {"type": "function", "function": {
+            "name": "get_character",
+            "description": "Fiche perso (vision, arme, nation, description). Use quand la question porte sur un perso précis ou son histoire.",
+            "parameters": {"type": "object", "properties": {
+                "name": {"type": "string"}}}, "required": ["name"]}},
+        {"type": "function", "function": {
+            "name": "web_search",
+            "description": "Recherche web (patch, version, bannières, events, histoire récente). Use quand le joueur demande l'actu ou si le wiki ne suffit pas.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"}}}, "required": ["query"]}},
+        {"type": "function", "function": {
+            "name": "wiki_search",
+            "description": "Recherche wiki Fandom (lore, quêtes, chapitres, persos). Use pour histoire, lore, chapitre, quête.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"}}}, "required": ["query"]}},
+    ]
+
+
+def _response_tools():
+    out = []
+    for s in _tool_specs():
+        f = s.get("function") or {}
+        out.append({"type": "function", "name": f.get("name"),
+                    "description": f.get("description", ""),
+                    "parameters": f.get("parameters") or {"type": "object", "properties": {}}})
+    return out
+
+
+def _use_responses():
+    return "zen/go" in (E("OMNIROUTE_BASE_URL") or "")
+
+
+def _model_id():
+    model = E("OMNIROUTE_MODEL", "auto")
+    if _use_responses():
+        return model.split("/", 1)[-1]  # opencode-go/x -> x
+    return model
+
+
+def _build_msgs(question, uid=None, history=None):
     uid = str(uid or DEFAULT_UID)
-    t0 = time.time()
-    box = {}
-
-    def w_ctx():
-        try:
-            data = fetch_showcase(uid)
-            box["ctx"] = showcase_text or showcase_summary(data)
-            box["detailed"] = bool(data.get("avatarInfoList"))
-        except Exception as ex:
-            box["ctx"] = (f"Enka inaccessible pour UID {uid} : {ex}. "
-                          "Conseiller en générique + vérifier UID/vitrine.")
-            box["detailed"] = False
-
-    def w_fact():
-        box["fact"] = maybe_fact_context(question)
-
-    t1 = threading.Thread(target=w_ctx, daemon=True)
-    t2 = threading.Thread(target=w_fact, daemon=True)
-    t1.start()
-    t2.start()
-    t1.join(30)
-    t2.join(30)
-    ctx = box.get("ctx") or f"Enka trop lent pour UID {uid}. Conseiller en générique."
-    detailed = box.get("detailed", False)
-    fact = box.get("fact") or ""
-    print(f"TIMING ctx+fact={time.time()-t0:.1f}s (q={question[:40]!r})", flush=True)
-    msgs = [{"role": "system", "content": SYSTEM + "\n\nCompte joueur (Enka) :\n" + ctx[:4000]}]
-    if fact:
-        msgs.append({"role": "system",
-                     "content": "Infos fact-check (web + Fandom, à respecter) :\n" + fact[:2000]})
-    for m in (history or [])[-8:]:
-        if m.get("role") in ("user", "assistant") and m.get("content"):
-            msgs.append({"role": m["role"], "content": m["content"][:2000]})
+    msgs = [{"role": "system", "content": SYSTEM + f"\n\nUID joueur : {uid}."}]
+    for h in (history or [])[-8:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            msgs.append({"role": h["role"], "content": h["content"][:2000]})
     msgs.append({"role": "user", "content": question})
-    return msgs, detailed, ctx
+    return msgs, _tool_specs()
+
+
+def _parse_tool_call(c):
+    fn = c.get("function") or {}
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except Exception:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    try:
+        args_preview = json.dumps(args, default=str)[:200]
+    except Exception:
+        args_preview = ""
+    return (fn.get("name") or "", args, args_preview)
+
+
+def _step_error(name, out):
+    if name not in _TOOL_FNS:
+        return True
+    low = (out or "").lower()
+    return any(h in low for h in _ERR_HINTS)
+
+
+# ----- Transport /chat/completions (dev local) -----
+
+def _chat_complete(msgs, specs, session_key="", timeout=120):
+    url = E("OMNIROUTE_BASE_URL").rstrip("/") + "/chat/completions"
+    payload = {"model": _model_id(), "stream": False, "messages": msgs}
+    if specs:
+        payload["tools"] = specs
+        payload["tool_choice"] = "auto"
+    try:
+        return _http_json(url, method="POST", timeout=timeout,
+                          headers=_llm_headers(session_key), data=payload), False
+    except Exception as e:
+        if specs and "400" in str(e):  # modèle sans support tools -> one-shot
+            payload = {"model": _model_id(), "stream": False, "messages": msgs}
+            return _http_json(url, method="POST", timeout=timeout,
+                              headers=_llm_headers(session_key), data=payload), True
+        raise
+
+
+def _chat_stream(msgs, specs, box, session_key="", timeout=120):
+    """Stream OpenAI-compatible SSE. Yield token strings live, fills box{content,tcs,model}."""
+    url = E("OMNIROUTE_BASE_URL").rstrip("/") + "/chat/completions"
+    payload = {"model": _model_id(), "stream": True, "messages": msgs}
+    if specs:
+        payload["tools"] = specs
+        payload["tool_choice"] = "auto"
+    try:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              **_llm_headers(session_key)})
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except Exception as e:
+        if specs and "400" in str(e):  # modèle sans support tools -> retry sans tools
+            box["specs_fallback"] = True
+            yield from _chat_stream(msgs, [], box, session_key, timeout)
+            return
+        raise
+    content_parts, tc_acc, model_used = [], {}, _model_id()
+    with resp:
+        while True:
+            line = resp.readline()
+            if not line:
+                break
+            try:
+                s = line.decode("utf-8", "replace").strip()
+            except Exception:
+                continue
+            if not s or s.startswith(":") or not s.startswith("data:"):
+                continue
+            ds = s[5:].strip()
+            if ds == "[DONE]":
+                break
+            try:
+                chunk = json.loads(ds)
+            except Exception:
+                continue
+            if chunk.get("model"):
+                model_used = chunk["model"]
+            for choice in chunk.get("choices") or []:
+                delta = choice.get("delta") or {}
+                c = delta.get("content")
+                if c:
+                    content_parts.append(c)
+                    yield c
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    ent = tc_acc.get(idx)
+                    if ent is None:
+                        ent = {"id": "", "name": "", "args": ""}
+                        tc_acc[idx] = ent
+                    if tc.get("id"):
+                        ent["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        ent["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        ent["args"] += fn["arguments"]
+    tcs = [{"id": ent["id"] or ent["name"] or "tool_%d" % i, "type": "function",
+            "function": {"name": ent["name"], "arguments": ent["args"] or "{}"}}
+           for i, ent in sorted(tc_acc.items()) if ent["name"]]
+    box.update(content="".join(content_parts), tcs=tcs, model=model_used)
+
+
+# ----- Transport /responses (prod zen/go, muse-spark) -----
+
+def _to_responses_input(msgs):
+    items = []
+    for m in msgs or []:
+        r = m.get("role")
+        if r == "system":
+            items.append({"role": "system", "content": m.get("content", "")})
+        elif r == "user":
+            items.append({"role": "user", "content": m.get("content", "")})
+        elif r == "assistant":
+            if m.get("content"):
+                items.append({"role": "assistant", "content": m["content"]})
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                items.append({"type": "function_call",
+                              "call_id": tc.get("id"),
+                              "name": fn.get("name"),
+                              "arguments": fn.get("arguments") or "{}"})
+        elif r == "tool":
+            items.append({"type": "function_call_output",
+                          "call_id": m.get("tool_call_id"),
+                          "output": m.get("content", "")})
+    return items
+
+
+def _responses_output_to_chat(d):
+    text_parts, tcs = [], []
+    for item in d.get("output") or []:
+        t = item.get("type")
+        if t == "message":
+            for c in item.get("content") or []:
+                if c.get("type") in ("output_text", "text") and c.get("text"):
+                    text_parts.append(c["text"])
+        elif t == "function_call":
+            args = item.get("arguments")
+            if not isinstance(args, str):
+                try:
+                    args = json.dumps(args or {})
+                except Exception:
+                    args = "{}"
+            tcs.append({"id": item.get("call_id") or item.get("id") or item.get("name"),
+                        "type": "function",
+                        "function": {"name": item.get("name"), "arguments": args}})
+    return "".join(text_parts), tcs, _responses_summary(d)
+
+
+def _responses_complete(msgs, specs, session_key="", timeout=180, reasoning=None):
+    base = E("OMNIROUTE_BASE_URL").rstrip("/")
+    payload = {"model": _model_id(), "stream": False, "input": _to_responses_input(msgs)}
+    if specs:
+        payload["tools"] = _response_tools()
+        payload["tool_choice"] = "auto"
+    payload.update(_reasoning_arg(reasoning))
+    try:
+        d = _http_json(base + "/responses", method="POST", timeout=timeout,
+                       headers=_llm_headers(session_key), data=payload)
+    except Exception as e:
+        if specs and "400" in str(e):
+            payload = {"model": _model_id(), "stream": False,
+                       "input": _to_responses_input(msgs)}
+            payload.update(_reasoning_arg(reasoning))
+            d = _http_json(base + "/responses", method="POST", timeout=timeout,
+                           headers=_llm_headers(session_key), data=payload)
+            text, tcs, think = _responses_output_to_chat(d)
+            return text, tcs, think, True
+        raise
+    text, tcs, think = _responses_output_to_chat(d)
+    return text, tcs, think, False
+
+
+def _responses_stream(msgs, specs, box, session_key="", timeout=180):
+    """Stream Responses SSE. Yield ("token",str)/("thinking",str), fills box."""
+    base = E("OMNIROUTE_BASE_URL").rstrip("/")
+    payload = {"model": _model_id(), "stream": True, "input": _to_responses_input(msgs)}
+    if specs:
+        payload["tools"] = _response_tools()
+        payload["tool_choice"] = "auto"
+    payload.update(_reasoning_arg())
+    try:
+        stream = _sse_post(base + "/responses", payload, _llm_headers(session_key),
+                           timeout=timeout)
+        first = next(stream)
+    except StopIteration:
+        box.update(content="", tcs=[], thinking="", model=_model_id())
+        return
+        yield  # pragma: no cover - garde le générateur paresseux
+    except Exception as e:
+        if specs and "400" in str(e):
+            box["specs_fallback"] = True
+            yield from _responses_stream(msgs, [], box, session_key, timeout)
+            return
+        raise
+    content_parts, think_parts, calls, order = [], [], {}, []
+    model_used, out_tokens = _model_id(), None
+
+    def _feed(evt):
+        nonlocal out_tokens
+        if isinstance(evt, str):
+            return None
+        if not isinstance(evt, dict):
+            return None
+        if evt.get("model") and isinstance(evt.get("model"), str):
+            nonlocal_model[0] = evt["model"]
+        t = evt.get("type", "")
+        if t == "response.output_text.delta" and isinstance(evt.get("delta"), str):
+            content_parts.append(evt["delta"])
+            return ("token", evt["delta"])
+        th = _extract_thinking(evt)
+        if th:
+            think_parts.append(th)
+            return ("thinking", th)
+        if t == "response.output_item.added":
+            item = evt.get("item") or {}
+            if item.get("type") == "function_call":
+                key = item.get("id") or item.get("call_id") or "call_%d" % len(order)
+                if key not in calls:
+                    calls[key] = {"id": item.get("call_id") or item.get("id") or "",
+                                  "name": item.get("name") or "", "args": ""}
+                    order.append(key)
+            return None
+        if t == "response.output_item.done":
+            item = evt.get("item") or {}
+            if item.get("type") == "function_call":
+                key = item.get("id") or item.get("call_id") or (order[-1] if order else None)
+                args = item.get("arguments")
+                if key is not None:
+                    if key not in calls:
+                        calls[key] = {"id": "", "name": "", "args": ""}
+                        order.append(key)
+                    if item.get("name"):
+                        calls[key]["name"] = item["name"]
+                    if isinstance(args, str) and args:
+                        calls[key]["args"] = args
+            return None
+        if t == "response.function_call_arguments.delta":
+            a = evt.get("delta")
+            if isinstance(a, str) and a and order:
+                calls[order[-1]]["args"] += a
+            return None
+        if t == "response.completed":
+            resp = evt.get("response") or {}
+            u = resp.get("usage") or evt.get("usage") or {}
+            try:
+                out_tokens = int(u.get("output_tokens") or 0) or None
+            except (TypeError, ValueError):
+                out_tokens = None
+            return None
+        try:  # repli format chat inattendu
+            ch = (evt.get("choices") or [{}])[0] or {}
+            d = ((ch.get("delta") or {}).get("content")) or ch.get("text")
+        except Exception:
+            d = ""
+        if d:
+            content_parts.append(d)
+            return ("token", d)
+        return None
+
+    nonlocal_model = [model_used]
+    try:
+        r = _feed(first)
+        if r:
+            yield r
+        for evt in stream:
+            r = _feed(evt)
+            if r:
+                yield r
+    except Exception as e:
+        if specs and "400" in str(e):
+            box["specs_fallback"] = True
+            yield from _responses_stream(msgs, [], box, session_key, timeout)
+            return
+        raise
+    tcs = [{"id": calls[k]["id"] or calls[k]["name"] or "tool_%d" % i, "type": "function",
+            "function": {"name": calls[k]["name"], "arguments": calls[k]["args"] or "{}"}}
+           for i, k in enumerate(order) if calls[k]["name"]]
+    box.update(content="".join(content_parts), tcs=tcs, thinking="".join(think_parts),
+               model=nonlocal_model[0], out_tokens=out_tokens)
+
+
+def _stream_turn(msgs, specs, box, session_key=""):
+    if _use_responses():
+        yield from _responses_stream(msgs, specs, box, session_key)
+    else:
+        yield from _chat_stream(msgs, specs, box, session_key)
+
+
+def _turn_content_tcs(msgs, specs, session_key=""):
+    """Un tour non-streamé -> (content, tcs, thinking, model, specs_fallback)."""
+    if _use_responses():
+        text, tcs, think, fell = _responses_complete(msgs, specs, session_key)
+        return text, tcs, think, _model_id(), fell
+    data, fell = _chat_complete(msgs, specs, session_key)
+    msg = data["choices"][0]["message"]
+    return msg.get("content") or "", msg.get("tool_calls") or [], "",         data.get("model") or _model_id(), fell
+
+
+# ----- Boucle agent -----
+
+def _execute_calls(tcs, msgs, steps, seen, uid, content=""):
+    """Exécute les tool_calls, alimente msgs/steps. -> detailed (True/False/None)."""
+    detailed = None
+    msgs.append({"role": "assistant", "content": content, "tool_calls": tcs})
+    for c in tcs:
+        name, args, args_preview = _parse_tool_call(c)
+        t0 = time.time()
+        key = (name, args_preview)
+        if key in seen:
+            out = seen[key]
+            repeat = True
+        else:
+            out = _run_tool(name, args, uid)
+            seen[key] = out
+            repeat = False
+        ms = int((time.time() - t0) * 1000)
+        err = _step_error(name, out)
+        steps.append({"tool": name, "args": args_preview, "result": out[:_STEP_PREVIEW],
+                      "ms": ms, "error": err})
+        if name == "get_showcase" and not err and "MASQUÉE" not in out:
+            detailed = True
+        if repeat:
+            out = out + " [appel identique déjà effectué : réponds maintenant sans nouvel appel]"
+        msgs.append({"role": "tool", "tool_call_id": c.get("id") or name or "tool",
+                     "content": out[:_TOOL_TRUNC]})
+    return detailed
+
+
+def _audit_fallback_text(uid, err):
+    try:
+        data = fetch_showcase(uid)
+        ctx = showcase_summary(data)
+    except Exception:
+        ctx = f"Enka inaccessible pour UID {uid}."
+    return ("Le LLM est injoignable (%s). En attendant, voici l'audit de ta vitrine :\n\n%s"
+            % (err, ctx[:3000]))
 
 
 def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
     uid = str(uid or DEFAULT_UID)
     t_all = time.time()
-    msgs, _, ctx = build_messages(question, uid=uid, history=history, showcase_text=showcase_text)
-    t0 = time.time()
+    msgs, specs = _build_msgs(question, uid, history)
+    model = _model_id()
+    answer, steps, thinking_parts = "", [], []
+    seen = {}
+    detailed = None
     try:
-        answer, model, thinking, usage = llm_complete(msgs, session_key=session_key or uid)
-        return {"answer": answer, "model": model, "thinking": thinking,
-                "stats": {"total_s": round(time.time() - t_all, 1),
-                          "llm_s": round(time.time() - t0, 1), "out": usage}, "llm": True}
+        for _ in range(MAX_ITERS):
+            content, tcs, thinking, model, fell = _turn_content_tcs(
+                msgs, specs, session_key or uid)
+            if fell:
+                specs = []
+            if thinking:
+                thinking_parts.append(thinking)
+            if not tcs and content:
+                leaked = _extract_leaked_tool_calls(content)
+                if leaked:
+                    tcs = leaked
+                    content = _sanitize_answer(content)
+            if not tcs:
+                answer = _sanitize_answer(content)
+                break
+            det = _execute_calls(tcs, msgs, steps, seen, uid, _sanitize_answer(content))
+            if det:
+                detailed = True
+        else:
+            synth = msgs + [{"role": "user",
+                             "content": "Tu as atteint la limite d'outils. Réponds maintenant en texte "
+                                        "clair, sans JSON brut ni balises <function>/<parameter>, en "
+                                        "t'appuyant sur les résultats déjà obtenus."}]
+            content, _, thinking, model, _ = _turn_content_tcs(synth, [], session_key or uid)
+            if thinking:
+                thinking_parts.append(thinking)
+            answer = _sanitize_answer(content)
     except Exception as ex:
-        fall = ("Le LLM est injoignable (%s). En attendant, voici l'audit de ta vitrine :\n\n%s"
-                % (ex, ctx[:3000]))
-        return {"answer": fall, "model": "audit-only", "thinking": "",
-                "stats": {"total_s": round(time.time() - t_all, 1),
-                          "llm_s": None, "out": None}, "llm": False}
+        if not answer:
+            try:
+                content, _, thinking, model, _ = _turn_content_tcs(
+                    msgs + [{"role": "user",
+                             "content": "DATA (fallback) :\n" + showcase_summary(fetch_showcase(uid))[:3000]}],
+                    [], session_key or uid)
+                if thinking:
+                    thinking_parts.append(thinking)
+                answer = _sanitize_answer(content)
+            except Exception:
+                pass
+        if not answer:
+            return {"answer": _audit_fallback_text(uid, ex), "model": "audit-only",
+                    "thinking": "\n".join(thinking_parts), "steps": steps, "detailed": detailed,
+                    "stats": {"total_s": round(time.time() - t_all, 1),
+                              "llm_s": None, "out": None}, "llm": False}
+    return {"answer": _sanitize_answer(answer), "model": model,
+            "thinking": "\n".join(thinking_parts), "steps": steps, "detailed": detailed,
+            "stats": {"total_s": round(time.time() - t_all, 1),
+                      "llm_s": None, "out": None}, "llm": True}
+
+
+def ask_stream(question, uid=None, history=None, session_key=""):
+    """Générateur d'events live: thinking/step_start/step_end/token/done/error. Stdlib only."""
+    uid = str(uid or DEFAULT_UID)
+    msgs, specs = _build_msgs(question, uid, history)
+    model = _model_id()
+    steps, full, thinking_parts = [], "", []
+    seen = {}
+    detailed = None
+    try:
+        for _ in range(MAX_ITERS):
+            box = {}
+            raw_content, raw_thinking = "", ""
+            try:
+                gen = _stream_turn(msgs, specs, box, session_key or uid)
+                for kind, tok in gen:
+                    # brouillons intermédiaires bufferisés : seule la réponse finale part au front
+                    if kind == "thinking":
+                        raw_thinking += tok
+                    else:
+                        raw_content += tok
+                if box.get("specs_fallback"):
+                    specs = []
+                tcs = box.get("tcs") or []
+                model = box.get("model") or model
+                if box.get("thinking"):
+                    raw_thinking = box["thinking"] + raw_thinking
+                content = _sanitize_answer(raw_content) if raw_content else ""
+                if not tcs and raw_content:
+                    leaked = _extract_leaked_tool_calls(raw_content)
+                    if leaked:
+                        tcs = leaked
+                        content = _sanitize_answer(raw_content)
+            except Exception as e:
+                if specs and "400" in str(e):
+                    specs = []
+                    continue
+                raise
+            if raw_thinking:
+                thinking_parts.append(raw_thinking)
+                yield {"type": "thinking", "delta": raw_thinking}
+            if not tcs:
+                if content:
+                    full += content
+                    yield {"type": "token", "delta": content}
+                break
+            msgs.append({"role": "assistant", "content": content, "tool_calls": tcs})
+            for c in tcs:
+                name, args, args_preview = _parse_tool_call(c)
+                yield {"type": "step_start", "tool": name, "args": args_preview}
+                t0 = time.time()
+                key = (name, args_preview)
+                if key in seen:
+                    out = seen[key]
+                    repeat = True
+                else:
+                    out = _run_tool(name, args, uid)
+                    seen[key] = out
+                    repeat = False
+                ms = int((time.time() - t0) * 1000)
+                err = _step_error(name, out)
+                steps.append({"tool": name, "args": args_preview, "result": out[:_STEP_PREVIEW],
+                              "ms": ms, "error": err})
+                yield {"type": "step_end", "tool": name, "args": args_preview,
+                       "result": out[:_STEP_PREVIEW], "ms": ms, "error": err}
+                if name == "get_showcase" and not err and "MASQUÉE" not in out:
+                    detailed = True
+                if repeat:
+                    out = out + " [appel identique déjà effectué : réponds maintenant sans nouvel appel]"
+                msgs.append({"role": "tool", "tool_call_id": c.get("id") or name or "tool",
+                             "content": out[:_TOOL_TRUNC]})
+        else:  # iters épuisées : synthèse forcée sans outils
+            synth = msgs + [{"role": "user",
+                             "content": "Tu as atteint la limite d'outils. Réponds maintenant en texte "
+                                        "clair, sans JSON brut ni balises <function>/<parameter>, en "
+                                        "t'appuyant sur les résultats déjà obtenus."}]
+            box = {}
+            raw = ""
+            for kind, tok in _stream_turn(synth, [], box, session_key or uid):
+                if kind == "thinking":
+                    thinking_parts.append(tok)
+                    yield {"type": "thinking", "delta": tok}
+                else:
+                    raw += tok
+            content = _sanitize_answer(raw)
+            model = box.get("model") or model
+            if content:
+                full += content
+                yield {"type": "token", "delta": content}
+        full = _sanitize_answer(full)
+        yield {"type": "done", "answer": full, "model": model, "steps": steps,
+               "thinking": "\n".join(thinking_parts), "detailed": detailed}
+    except Exception as e:
+        if not full:  # dernier recours : audit Enka plutôt qu'un 500
+            try:
+                fb = _audit_fallback_text(uid, e)
+                yield {"type": "token", "delta": fb}
+                yield {"type": "done", "answer": fb, "model": "audit-only", "steps": steps,
+                       "thinking": "\n".join(thinking_parts), "detailed": detailed}
+                return
+            except Exception:
+                pass
+        yield {"type": "error", "error": str(e)}
