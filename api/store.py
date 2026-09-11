@@ -85,7 +85,12 @@ def _local(sql, args=(), fetch=None):
 
 def _q(sql, args=(), fetch=None):
     if _turso_cfg():
-        return _turso(sql, args) if fetch else (_turso(sql, args) or None)
+        rows = _turso(sql, args) or []
+        if fetch == "one":
+            return rows[0] if rows else None
+        if fetch == "all":
+            return rows
+        return rows or None
     return _local(sql, args, fetch)
 
 
