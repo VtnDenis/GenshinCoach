@@ -49,6 +49,7 @@
 	let deletingId = $state<string | null>(null);
 	let loadingSessions = $state(true);
 	let sessionsError = $state('');
+	let streaming = $state(false);
 
 	let { initialSid = null }: { initialSid?: string | null } = $props();
 
@@ -222,12 +223,15 @@
 		msgs = [...msgs, { role: 'assistant', text: '' }];
 		const idx = msgs.length - 1;
 		let streamed = '';
+		streaming = false;
 		const paint = (t: string) => {
 			streamed += t;
+			streaming = true;
 			msgs = msgs.map((m, i) => (i === idx ? { ...m, text: streamed } : m));
 			scrollBottom();
 		};
 		const finish = (text: string, model?: string | null) => {
+			if (!text.trim()) text = 'Erreur : réponse vide du coach, réessaie.';
 			msgs = msgs.map((m, i) =>
 				i === idx ? { role: 'assistant', text, model: model ?? m.model } : m
 			);
@@ -251,6 +255,7 @@
 			finish(streamed ? `${streamed}\n\nErreur : ${(e as Error).message}` : `Erreur : ${(e as Error).message}`);
 		} finally {
 			busy = false;
+			streaming = false;
 			scrollBottom();
 		}
 	}
@@ -496,7 +501,7 @@
 							</button>
 						</div>
 					{/if}
-					{#each msgs as m (m.text + m.role)}
+					{#each msgs as m, i (i + '-' + m.role)}
 						<div use:rise class="w-full {m.role === 'user' ? 'flex justify-end' : ''}">
 							{#if m.role === 'user'}
 								<p
@@ -506,12 +511,21 @@
 								</p>
 							{:else}
 								<div class="w-full min-w-0">
-									<CoachMessage text={m.text} model={m.model} />
+									{#if !m.text && busy && i === msgs.length - 1}
+										<div class="rounded-card border border-line bg-surface px-4 py-3">
+											<LoadingState label="Coach écrit" />
+										</div>
+									{:else}
+										<CoachMessage
+											text={m.text || 'Erreur : réponse vide du coach, réessaie.'}
+											model={m.model}
+										/>
+									{/if}
 								</div>
 							{/if}
 						</div>
 					{/each}
-					{#if busy}
+					{#if busy && !streaming}
 						<div use:rise class="w-full">
 							<div class="rounded-card border border-line bg-surface px-4 py-3">
 								<Thinking rows={[]} working={true} activeLabel="Analyse de ta vitrine…" />
