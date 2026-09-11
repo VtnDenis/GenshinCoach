@@ -92,7 +92,16 @@ export const setSid = (v: string | null) => {
 };
 
 async function j<T>(r: Response): Promise<T> {
-	if (!r.ok) throw new Error(`Erreur ${r.status}`);
+	if (!r.ok) {
+		let detail = '';
+		try {
+			const b = (await r.json()) as { error?: unknown };
+			if (b && typeof b.error === 'string' && b.error) detail = ` : ${b.error}`;
+		} catch {
+			/* corps illisible, on garde le statut seul */
+		}
+		throw new Error(`Erreur ${r.status}${detail}`);
+	}
 	return (await r.json()) as T;
 }
 
