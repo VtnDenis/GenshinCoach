@@ -412,8 +412,9 @@ def _responses_summary(d):
 def _reasoning_arg(override=None):
     """Effort de raisonnement (Responses API) : OMNIROUTE_REASONING_EFFORT=minimal|low|medium|high|xhigh.
     Défaut 'xhigh' + résumé partageable (summary:auto) pour afficher le train de pensée dans l'UI.
-    `override` permet au planificateur agent de raisonner en 'minimal' (rapide, pas cher)."""
-    v = ((override or E("OMNIROUTE_REASONING_EFFORT", "xhigh")) or "").strip().lower()
+    `override` force un niveau (planification = 'minimal', rapide, pas cher).
+    Défaut 'low' : xhigh = 15s+ de silence car les summaries ne streament pas."""
+    v = ((override or E("OMNIROUTE_REASONING_EFFORT", "low")) or "").strip().lower()
     if v in ("minimal", "low", "medium", "high", "xhigh"):
         return {"reasoning": {"effort": v, "summary": "auto"}}
     return {}
@@ -797,14 +798,14 @@ def _responses_complete(msgs, specs, session_key="", timeout=180, reasoning=None
     return text, tcs, think, False
 
 
-def _responses_stream(msgs, specs, box, session_key="", timeout=180):
+def _responses_stream(msgs, specs, box, session_key="", timeout=180, reasoning=None):
     """Stream Responses SSE. Yield ("token",str)/("thinking",str), fills box."""
     base = E("OMNIROUTE_BASE_URL").rstrip("/")
     payload = {"model": _model_id(), "stream": True, "input": _to_responses_input(msgs)}
     if specs:
         payload["tools"] = _response_tools()
         payload["tool_choice"] = "auto"
-    payload.update(_reasoning_arg())
+    payload.update(_reasoning_arg(reasoning))
     try:
         stream = _sse_post(base + "/responses", payload, _llm_headers(session_key),
                            timeout=timeout)
@@ -816,7 +817,7 @@ def _responses_stream(msgs, specs, box, session_key="", timeout=180):
     except Exception as e:
         if specs and "400" in str(e):
             box["specs_fallback"] = True
-            yield from _responses_stream(msgs, [], box, session_key, timeout)
+            yield from _responses_stream(msgs, [], box, session_key, timeout, reasoning)
             return
         raise
     content_parts, think_parts, calls, order = [], [], {}, []
@@ -866,6 +867,9 @@ def _responses_stream(msgs, specs, box, session_key="", timeout=180):
             if isinstance(a, str) and a and order:
                 calls[order[-1]]["args"] += a
             return None
+        if t == "response.incomplete":
+            box["incomplete"] = True
+            return None
         if t == "response.completed":
             resp = evt.get("response") or {}
             u = resp.get("usage") or evt.get("usage") or {}
@@ -896,7 +900,7 @@ def _responses_stream(msgs, specs, box, session_key="", timeout=180):
     except Exception as e:
         if specs and "400" in str(e):
             box["specs_fallback"] = True
-            yield from _responses_stream(msgs, [], box, session_key, timeout)
+            yield from _responses_stream(msgs, [], box, session_key, timeout, reasoning)
             return
         raise
     tcs = [{"id": calls[k]["id"] or calls[k]["name"] or "tool_%d" % i, "type": "function",
@@ -906,17 +910,18 @@ def _responses_stream(msgs, specs, box, session_key="", timeout=180):
                model=nonlocal_model[0], out_tokens=out_tokens)
 
 
-def _stream_turn(msgs, specs, box, session_key=""):
+def _stream_turn(msgs, specs, box, session_key="", reasoning=None):
     if _use_responses():
-        yield from _responses_stream(msgs, specs, box, session_key)
+        yield from _responses_stream(msgs, specs, box, session_key, reasoning=reasoning)
     else:
         yield from _chat_stream(msgs, specs, box, session_key)
 
 
-def _turn_content_tcs(msgs, specs, session_key=""):
+def _turn_content_tcs(msgs, specs, session_key="", reasoning=None):
     """Un tour non-streamé -> (content, tcs, thinking, model, specs_fallback)."""
     if _use_responses():
-        text, tcs, think, fell = _responses_complete(msgs, specs, session_key)
+        text, tcs, think, fell = _responses_complete(msgs, specs, session_key,
+                                                     reasoning=reasoning)
         return text, tcs, think, _model_id(), fell
     data, fell = _chat_complete(msgs, specs, session_key)
     msg = data["choices"][0]["message"]
@@ -971,14 +976,24 @@ def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
     answer, steps, thinking_parts = "", [], []
     seen = {}
     detailed = None
+    incomplete_retry = False
     try:
         for _ in range(MAX_ITERS):
             content, tcs, thinking, model, fell = _turn_content_tcs(
-                msgs, specs, session_key or uid)
+                msgs, specs, session_key or uid, reasoning="minimal")
             if fell:
                 specs = []
             if thinking:
                 thinking_parts.append(thinking)
+            if not tcs and not (content or "").strip():
+                # tour vide (ex. response.incomplete) : 1 retry sans outils, réponse courte
+                if not incomplete_retry:
+                    incomplete_retry = True
+                    specs = []
+                    msgs.append({"role": "user",
+                                 "content": "Ta réponse précédente a été coupée. Réponds "
+                                            "brièvement en texte simple, sans outils."})
+                    continue
             if not tcs and content:
                 leaked = _extract_leaked_tool_calls(content)
                 if leaked:
@@ -1032,12 +1047,14 @@ def ask_stream(question, uid=None, history=None, session_key=""):
     steps, full, thinking_parts = [], "", []
     seen = {}
     detailed = None
+    incomplete_retry = False
     try:
         for _ in range(MAX_ITERS):
             box = {}
             turn_text, turn_think, fwd = "", "", 0
             try:
-                for kind, tok in _stream_turn(msgs, specs, box, session_key or uid):
+                for kind, tok in _stream_turn(msgs, specs, box, session_key or uid,
+                                              reasoning="minimal"):
                     if kind == "thinking":
                         turn_think += tok
                         yield {"type": "thinking", "delta": tok}
@@ -1062,6 +1079,15 @@ def ask_stream(question, uid=None, history=None, session_key=""):
                 raise
             if turn_think:
                 thinking_parts.append(turn_think)
+            if not tcs and not (turn_text or "").strip():
+                # tour vide (ex. response.incomplete) : 1 retry sans outils, réponse courte
+                if not incomplete_retry:
+                    incomplete_retry = True
+                    specs = []
+                    msgs.append({"role": "user",
+                                 "content": "Ta réponse précédente a été coupée. Réponds "
+                                            "brièvement en texte simple, sans outils."})
+                    continue
             if tcs:
                 if fwd > 0:  # retire le brouillon déjà peint
                     yield {"type": "scratch", "chars": fwd}
