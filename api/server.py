@@ -109,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
                 sid = store.ensure_session(b.get("session_id") or "", uid)
                 hist = [{"role": m["role"], "content": m["content"]}
                         for m in store.get_messages(sid)[-8:]]
-                r = genshin.ask(q, uid=uid, history=hist)
+                r = genshin.ask(q, uid=uid, history=hist, session_key=sid)
                 store.add_message(sid, "user", q)
                 store.add_message(sid, "assistant", r["answer"])
                 try:

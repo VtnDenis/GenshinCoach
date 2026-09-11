@@ -317,23 +317,54 @@ def maybe_news_context(question):
 
 # ---------- LLM (OmniRoute dev / zen prod, cf. RunCoach coach.py:307) ----------
 
-def _llm_headers():
+def _llm_headers(session_key=""):
     base = E("OMNIROUTE_BASE_URL") or ""
-    if "opencode.ai" in base:
-        return {"User-Agent": "opencode-cli/1.0.0", "x-opencode-client": "desktop",
-                "x-opencode-project": "global",
+    key = E("OMNIROUTE_API_KEY", "")
+    if "zen/go" in base:
+        # opencode Go : abonnement payant, Bearer obligatoire, UA propre + session stable.
+        return {"User-Agent": "GenshinCoach/1.0",
+                "x-opencode-client": "genshincoach",
+                "x-opencode-project": "genshincoach",
                 "x-opencode-request": uuid.uuid4().hex,
-                "x-opencode-session": uuid.uuid4().hex}
-    return {"Authorization": f"Bearer {E('OMNIROUTE_API_KEY')}"}
+                "x-opencode-session": session_key or uuid.uuid4().hex,
+                "Authorization": f"Bearer {key}"}
+    if "opencode.ai" in base:
+        h = {"User-Agent": "opencode-cli/1.0.0", "x-opencode-client": "desktop",
+             "x-opencode-project": "global",
+             "x-opencode-request": uuid.uuid4().hex,
+             "x-opencode-session": session_key or uuid.uuid4().hex}
+        if key and key != "dummy-key":
+            h["Authorization"] = f"Bearer {key}"
+        return h
+    return {"Authorization": f"Bearer {key}"}
 
 
-def llm_complete(messages):
+def _responses_text(d):
+    if isinstance(d.get("output_text"), str) and d["output_text"]:
+        return d["output_text"]
+    for item in d.get("output") or []:
+        if item.get("type") == "message":
+            for c in item.get("content") or []:
+                if c.get("type") in ("output_text", "text") and c.get("text"):
+                    return c["text"]
+    raise RuntimeError(f"Réponse Go inattendue : {str(d)[:200]}")
+
+
+def llm_complete(messages, session_key=""):
     base = (E("OMNIROUTE_BASE_URL") or "").rstrip("/")
     model = E("OMNIROUTE_MODEL", "auto")
     if not base:
         raise RuntimeError("OMNIROUTE_BASE_URL manquant")
+    if "zen/go" in base:
+        model_id = model.split("/", 1)[-1]  # opencode-go/x -> x
+        d = _http_json(base + "/responses", method="POST", timeout=180,
+                       headers=_llm_headers(session_key),
+                       data={"model": model_id, "stream": False,
+                             "input": [{"role": m["role"], "content": m["content"]}
+                                       for m in messages if m.get("role") in ("system", "user", "assistant")]})
+        return _responses_text(d), model
     d = _http_json(base + "/chat/completions", method="POST", timeout=120,
-                   headers=_llm_headers(),
+                   headers=_llm_headers(session_key),
                    data={"model": model, "stream": False, "messages": messages})
     try:
         return d["choices"][0]["message"]["content"], d.get("model", model)
@@ -352,7 +383,7 @@ SYSTEM = ("Tu es un coach Genshin Impact francophone, direct et concret. "
           "Réponses courtes, listes à puces, pas de blabla.")
 
 
-def ask(question, uid=None, history=None, showcase_text=None):
+def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
     uid = str(uid or DEFAULT_UID)
     try:
         data = fetch_showcase(uid)
@@ -368,7 +399,7 @@ def ask(question, uid=None, history=None, showcase_text=None):
             msgs.append({"role": m["role"], "content": m["content"][:2000]})
     msgs.append({"role": "user", "content": question})
     try:
-        answer, model = llm_complete(msgs)
+        answer, model = llm_complete(msgs, session_key=session_key or uid)
         return {"answer": answer, "model": model, "llm": True}
     except Exception as ex:
         fall = ("Le LLM est injoignable (%s). En attendant, voici l'audit de ta vitrine :\n\n%s"

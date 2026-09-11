@@ -10,9 +10,9 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: OMNIROUTE_BASE_URL
-        value: https://opencode.ai/zen/v1
+        value: https://opencode.ai/zen/go/v1
       - key: OMNIROUTE_MODEL
-        value: big-pickle
+        value: opencode-go/muse-spark-1.3-contributor
       - key: GENSHIN_DEFAULT_UID
         value: "702342940"
       - key: GENSHIN_REGION
