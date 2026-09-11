@@ -19,7 +19,9 @@ export interface Step {
 	tool: string;
 	ms?: number | null;
 	result?: string;
-	error?: string;
+	error?: string | boolean;
+	args?: string;
+	pending?: boolean;
 }
 
 export interface MsgStats {
@@ -157,7 +159,9 @@ export const sendChatStream = async (
 	session_id: string | null,
 	onToken: (t: string) => void,
 	onThinking?: (t: string) => void,
-	onStep?: (s: Step) => void
+	onStep?: (s: Step) => void,
+	onStepStart?: (s: Step) => void,
+	onScratch?: (n: number) => void
 ): Promise<{
 	answer: string;
 	thinking: string;
@@ -212,6 +216,21 @@ export const sendChatStream = async (
 					onThinking?.(ev['thinking'] as string);
 				} else if (ev['meta'] && typeof (ev['meta'] as Record<string, unknown>)['session_id'] === 'string') {
 					sid = (ev['meta'] as Record<string, unknown>)['session_id'] as string;
+				} else if (ev['step_start'] && typeof ev['step_start'] === 'object') {
+					const p = ev['step_start'] as Record<string, unknown>;
+					const s = {
+						tool: String(p['tool'] ?? '?'),
+						args: typeof p['args'] === 'string' ? (p['args'] as string) : '',
+						pending: true
+					} as Step;
+					steps.push(s);
+					onStepStart?.(s);
+				} else if (typeof ev['scratch'] === 'object' && ev['scratch'] !== null) {
+					const n = (ev['scratch'] as Record<string, unknown>)['chars'];
+					if (typeof n === 'number' && n > 0) {
+						full = full.slice(0, Math.max(0, full.length - n));
+						onScratch?.(n);
+					}
 				} else if (ev['step'] && typeof ev['step'] === 'object') {
 					const s = ev['step'] as Step;
 					steps.push(s);

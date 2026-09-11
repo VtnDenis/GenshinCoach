@@ -224,6 +224,12 @@ class Handler(BaseHTTPRequestHandler):
                                     emit({"thinking": d})
                                 except (BrokenPipeError, ConnectionResetError):
                                     break
+                        elif et == "step_start":
+                            try:
+                                emit({"step_start": {"tool": ev.get("tool"),
+                                                     "args": ev.get("args") or ""}})
+                            except (BrokenPipeError, ConnectionResetError):
+                                break
                         elif et == "step_end":
                             st = {"tool": ev.get("tool"), "ms": ev.get("ms"),
                                   "result": (ev.get("result") or "")[:300],
@@ -231,6 +237,11 @@ class Handler(BaseHTTPRequestHandler):
                             steps_all.append(st)
                             try:
                                 emit({"step": st})
+                            except (BrokenPipeError, ConnectionResetError):
+                                break
+                        elif et == "scratch":
+                            try:
+                                emit({"scratch": {"chars": int(ev.get("chars") or 0)}})
                             except (BrokenPipeError, ConnectionResetError):
                                 break
                         elif et == "token":

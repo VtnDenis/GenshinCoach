@@ -253,10 +253,24 @@
 			msgs = msgs.map((m, i) => (i === idx ? { ...m, thinking: streamedThinking } : m));
 		};
 		let streamedSteps: import('$lib/api').Step[] = [];
-		const paintStep = (st: import('$lib/api').Step) => {
-			streamedSteps = [...streamedSteps, st];
+		const paintSteps = () => {
 			msgs = msgs.map((m, i) => (i === idx ? { ...m, steps: streamedSteps } : m));
+		};
+		const paintStepStart = (st: import('$lib/api').Step) => {
+			streamedSteps = [...streamedSteps, st];
+			paintSteps();
 			scrollBottom();
+		};
+		const paintStep = (st: import('$lib/api').Step) => {
+			const k = streamedSteps.findIndex((x) => x.tool === st.tool && (x as { pending?: boolean }).pending);
+			if (k >= 0) streamedSteps = streamedSteps.map((x, j) => (j === k ? st : x));
+			else streamedSteps = [...streamedSteps, st];
+			paintSteps();
+			scrollBottom();
+		};
+		const paintScratch = (n: number) => {
+			streamed = streamed.slice(0, Math.max(0, streamed.length - n));
+			msgs = msgs.map((m, i) => (i === idx ? { ...m, text: streamed } : m));
 		};
 		const finish = (
 			text: string,
@@ -283,7 +297,7 @@
 		};
 		try {
 			try {
-				const r = await sendChatStream(q, uid, sid, paint, paintThinking, paintStep);
+				const r = await sendChatStream(q, uid, sid, paint, paintThinking, paintStep, paintStepStart, paintScratch);
 				sid = r.session_id;
 				setSid(sid);
 				finish(r.answer || streamed, r.model, r.thinking || streamedThinking || null, r.thinkSecs, r.stats, r.steps?.length ? r.steps : streamedSteps);

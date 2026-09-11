@@ -1023,7 +1023,9 @@ def ask(question, uid=None, history=None, showcase_text=None, session_key=""):
 
 
 def ask_stream(question, uid=None, history=None, session_key=""):
-    """Générateur d'events live: thinking/step_start/step_end/token/done/error. Stdlib only."""
+    """Générateur d'events 100% live: thinking/token au fil de l'eau, step_start
+    avant chaque outil, step_end juste après, scratch si un brouillon doit être
+    retiré (tour fini en tool_calls). Seule la réponse finale reste affichée."""
     uid = str(uid or DEFAULT_UID)
     msgs, specs = _build_msgs(question, uid, history)
     model = _model_id()
@@ -1033,41 +1035,47 @@ def ask_stream(question, uid=None, history=None, session_key=""):
     try:
         for _ in range(MAX_ITERS):
             box = {}
-            raw_content, raw_thinking = "", ""
+            turn_text, turn_think, fwd = "", "", 0
             try:
-                gen = _stream_turn(msgs, specs, box, session_key or uid)
-                for kind, tok in gen:
-                    # brouillons intermédiaires bufferisés : seule la réponse finale part au front
+                for kind, tok in _stream_turn(msgs, specs, box, session_key or uid):
                     if kind == "thinking":
-                        raw_thinking += tok
+                        turn_think += tok
+                        yield {"type": "thinking", "delta": tok}
                     else:
-                        raw_content += tok
+                        turn_text += tok
+                        fwd += len(tok)
+                        yield {"type": "token", "delta": tok}
                 if box.get("specs_fallback"):
                     specs = []
                 tcs = box.get("tcs") or []
                 model = box.get("model") or model
-                if box.get("thinking"):
-                    raw_thinking = box["thinking"] + raw_thinking
-                content = _sanitize_answer(raw_content) if raw_content else ""
-                if not tcs and raw_content:
-                    leaked = _extract_leaked_tool_calls(raw_content)
+                content = _sanitize_answer(turn_text) if turn_text else ""
+                if not tcs and turn_text:
+                    leaked = _extract_leaked_tool_calls(turn_text)
                     if leaked:
                         tcs = leaked
-                        content = _sanitize_answer(raw_content)
+                        content = _sanitize_answer(turn_text)
             except Exception as e:
                 if specs and "400" in str(e):
                     specs = []
                     continue
                 raise
-            if raw_thinking:
-                thinking_parts.append(raw_thinking)
-                yield {"type": "thinking", "delta": raw_thinking}
-            if not tcs:
-                if content:
+            if turn_think:
+                thinking_parts.append(turn_think)
+            if tcs:
+                if fwd > 0:  # retire le brouillon déjà peint
+                    yield {"type": "scratch", "chars": fwd}
+                msgs.append({"role": "assistant", "content": content, "tool_calls": tcs})
+            else:
+                if content != turn_text:
+                    if fwd > 0:
+                        yield {"type": "scratch", "chars": fwd}
+                    if content:
+                        yield {"type": "token", "delta": content}
                     full += content
-                    yield {"type": "token", "delta": content}
+                else:
+                    full += turn_text
                 break
-            msgs.append({"role": "assistant", "content": content, "tool_calls": tcs})
             for c in tcs:
                 name, args, args_preview = _parse_tool_call(c)
                 yield {"type": "step_start", "tool": name, "args": args_preview}
@@ -1098,28 +1106,31 @@ def ask_stream(question, uid=None, history=None, session_key=""):
                                         "clair, sans JSON brut ni balises <function>/<parameter>, en "
                                         "t'appuyant sur les résultats déjà obtenus."}]
             box = {}
-            raw = ""
+            turn_text = ""
             for kind, tok in _stream_turn(synth, [], box, session_key or uid):
                 if kind == "thinking":
                     thinking_parts.append(tok)
                     yield {"type": "thinking", "delta": tok}
                 else:
-                    raw += tok
-            content = _sanitize_answer(raw)
+                    turn_text += tok
+                    yield {"type": "token", "delta": tok}
+            content = _sanitize_answer(turn_text)
             model = box.get("model") or model
-            if content:
-                full += content
-                yield {"type": "token", "delta": content}
+            if content != turn_text and turn_text:
+                yield {"type": "scratch", "chars": len(turn_text)}
+                if content:
+                    yield {"type": "token", "delta": content}
+            full += content
         full = _sanitize_answer(full)
         yield {"type": "done", "answer": full, "model": model, "steps": steps,
-               "thinking": "\n".join(thinking_parts), "detailed": detailed}
+               "thinking": "\n".join(x for x in thinking_parts if x), "detailed": detailed}
     except Exception as e:
         if not full:  # dernier recours : audit Enka plutôt qu'un 500
             try:
                 fb = _audit_fallback_text(uid, e)
                 yield {"type": "token", "delta": fb}
                 yield {"type": "done", "answer": fb, "model": "audit-only", "steps": steps,
-                       "thinking": "\n".join(thinking_parts), "detailed": detailed}
+                       "thinking": "\n".join(x for x in thinking_parts if x), "detailed": detailed}
                 return
             except Exception:
                 pass
